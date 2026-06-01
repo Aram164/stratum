@@ -2,6 +2,7 @@ from stratum.optimizer.ir._numeric_ops import NumericOp, NumericOpType
 from stratum.optimizer._op_utils import rewrite_pass, replace_op_in_outputs
 from stratum.optimizer.ir._ops import Op
 
+
 def match_two_op_chain(op_cls, type1, type2):
     """Match predicate for two consecutive ops of the same class with given types."""
     def match(op):
@@ -12,6 +13,7 @@ def match_two_op_chain(op_cls, type1, type2):
         return None
     return match
 
+
 def eliminate_two_op_chain(op1, op2):
     """Remove a redundant pair of inverse ops: y = f(op2(op1(x))) -> y = f(x).
 
@@ -20,6 +22,7 @@ def eliminate_two_op_chain(op1, op2):
     x = op1.inputs[0]
     x.outputs = [out for out in x.outputs if out is not op1]
     replace_op_in_outputs(op2, x)
+
 
 def eliminate_two_op_chain_root_safe(op1: Op, op2: Op, root: Op) -> Op:
     """Wrapper around eliminate_two_op_chain that handles the case where
@@ -51,7 +54,6 @@ def make_replace_two_op_chain_root_safe(make_replacement):
     return action
 
 
-
 eliminate_log_exp = rewrite_pass(
     match_two_op_chain(NumericOp, NumericOpType.LOG, NumericOpType.EXP),
     eliminate_two_op_chain_root_safe,
@@ -62,10 +64,21 @@ eliminate_exp_log = rewrite_pass(
     eliminate_two_op_chain_root_safe,
 )
 
-_replace_with_abs = make_replace_two_op_chain_root_safe(lambda : NumericOp(inputs=[], outputs=[], type=NumericOpType.ABS))
+eliminate_expm1_log1p = rewrite_pass(
+    match_two_op_chain(NumericOp, NumericOpType.EXPM1, NumericOpType.LOG1P),
+    eliminate_two_op_chain_root_safe,
+)
+
+eliminate_log1p_expm1 = rewrite_pass(
+    match_two_op_chain(NumericOp, NumericOpType.LOG1P, NumericOpType.EXPM1),
+    eliminate_two_op_chain_root_safe,
+)
+
+_replace_with_abs = make_replace_two_op_chain_root_safe(
+    lambda: NumericOp(inputs=[], outputs=[], type=NumericOpType.ABS)
+)
 
 eliminate_sqrt_square = rewrite_pass(
     match_two_op_chain(NumericOp, NumericOpType.SQUARE, NumericOpType.SQRT),
     _replace_with_abs,
 )
-

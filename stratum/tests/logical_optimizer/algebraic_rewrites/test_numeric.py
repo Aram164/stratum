@@ -46,6 +46,24 @@ class TestCSE(unittest.TestCase):
         self.assertEqual(len(out), 2)
         self.assertEqual(out[0].value, 1)
 
+    def test_log1p_expm1(self):
+        df = st.as_data_op(1)
+        t1 = df.skb.apply_func(np.log1p)
+        t2 = t1.skb.apply_func(np.expm1)
+
+        out, *_ = optimize(t2)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].value, 1)
+
+    def test_expm1_log1p(self):
+        df = st.as_data_op(1)
+        t1 = df.skb.apply_func(np.expm1)
+        t2 = t1.skb.apply_func(np.log1p)
+
+        out, *_ = optimize(t2)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].value, 1)
+
     def test_log_log1p(self):
         "no algebraic rewrite should be applied here "
         df = st.as_data_op(1)
@@ -54,6 +72,15 @@ class TestCSE(unittest.TestCase):
 
         out, *_ = optimize(t2)
         self.assertEqual(len(out), 3)
+
+    def test_expm1_log1p_disabled(self):
+        df = st.as_data_op(1)
+        t1 = df.skb.apply_func(np.expm1)
+        t2 = t1.skb.apply_func(np.log1p)
+        config = OptConfig(algebraic_rewrite_config=AlgebraicRewritesConfig(log1p_expm1 = False,expm1_log1p = False))
+        out, *_ = optimize(t2, config=config)
+        self.assertEqual(len(out), 3)
+        self.assertEqual(out[0].value, 1)
 
     def test_log_log1p_exp(self):
         "no algebraic rewrite should be applied here "
@@ -84,6 +111,7 @@ class TestCSE(unittest.TestCase):
         )
         out, *_ = optimize(t2, config=config)
         self.assertEqual(len(out), 3)
+
 
     def test_disable_log_exp_rewrite2(self):
         df = st.as_data_op(1)
@@ -205,4 +233,3 @@ class TestCSE(unittest.TestCase):
         )
         out, *_ = optimize(t2, config=config)
         self.assertEqual(len(out), 1)
-

@@ -47,6 +47,16 @@ class TestNumericOps(unittest.TestCase):
         result = op.process("fit", {}, [np.array([0.0, 1.0, 2.0])])
         np.testing.assert_array_almost_equal(result, np.array([1.0, np.e, np.e**2]))
 
+    def test_process_log1p(self):
+        op = NumericOp(inputs=[], outputs=None, func=np.log1p)
+        result = op.process("fit", {}, [np.array([1.0, np.e, np.e**2]) -1])
+        np.testing.assert_array_almost_equal(result, np.array([0.0, 1.0, 2.0]))
+
+    def test_process_expm1(self):
+        op = NumericOp(inputs=[], outputs=None, func=np.expm1)
+        result = op.process("fit", {}, [np.array([0.0, 1.0, 2.0])])
+        np.testing.assert_array_almost_equal(result, np.array([1.0, np.e, np.e**2]) - 1,)
+
     def test_process_sqrt(self):
         op = NumericOp(inputs=[], outputs=None, func=np.sqrt)
         result = op.process("fit", {}, [np.array([4.0, 9.0, 16.0])])
