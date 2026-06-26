@@ -14,6 +14,30 @@ def match_two_op_chain(op_cls, type1, type2):
     return match
 
 
+def match_identity_operation(op_cls, type1, const):
+    def match(op1):
+        if isinstance(op1, op_cls) and op1.type == type1:
+            if op1.opt_operand is None and op1.constant == const:
+                return (op1,)
+        return None
+    return match
+
+
+def eliminate_single_op_chain_root_safe(op, root):
+    eliminate_single_op_chain(op)
+    if op is root:
+        root = op.inputs[0]
+    return root
+
+
+def eliminate_single_op_chain(op):
+    primary = op.inputs[0]
+    op.replace_input_of_outputs(primary)
+    primary.outputs.remove(op)
+    for out_ in op.outputs:
+        primary.add_output(out_)
+
+
 def eliminate_two_op_chain(op1, op2):
     """Remove a redundant pair of inverse ops: y = f(op2(op1(x))) -> y = f(x).
 
@@ -81,4 +105,9 @@ _replace_with_abs = make_replace_two_op_chain_root_safe(
 eliminate_sqrt_square = rewrite_pass(
     match_two_op_chain(NumericOp, NumericOpType.SQUARE, NumericOpType.SQRT),
     _replace_with_abs,
+)
+
+eliminate_identity_operation = rewrite_pass(
+    match_identity_operation(NumericOp, NumericOpType.MULTIPLY, 1),
+    eliminate_single_op_chain_root_safe,
 )
