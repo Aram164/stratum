@@ -2,6 +2,7 @@ import unittest
 
 import pandas as pd
 import polars as pl
+import pytest
 import stratum as st
 from stratum.optimizer._optimize import OptConfig
 from stratum.optimizer.ir._join_ops import JoinOp
@@ -10,25 +11,68 @@ from stratum.tests.logical_optimizer.test_dataframe_ops import (
     force_polars, optimize, run_op)
 
 
+def to_list(obj):
+    if isinstance(obj, (pd.Series, pd.DataFrame)):
+        return obj.tolist()
+    if isinstance(obj, (pl.Series, pl.DataFrame)):
+        return obj.to_list()
+    return obj
+
+
+def make_frame(data, polars):
+    return pl.DataFrame(data) if polars else pd.DataFrame(data)
+
+
+@pytest.mark.parametrize("polars", [False, True])
+def test_join_op_merge_on_key(polars):
+    left = make_frame({"k": [1, 2, 3], "a": [10, 20, 30]}, polars)
+    right = make_frame({"k": [2, 3, 4], "b": [200, 300, 400]}, polars)
+    op = JoinOp(how="inner", left_on="k", right_on="k")
+    with st.config(force_polars=polars):
+        result = run_op(op, left, right)
+
+    assert [2, 3] == to_list(result["k"])
+    assert [20, 30] == to_list(result["a"])
+    assert [200, 300] == to_list(result["b"])
+
+
+@pytest.mark.parametrize("polars", [False, True])
+def test_join_op_merge_left_on_right_on_distinct(polars):
+    left = make_frame({"lk": [1, 2], "a": [10, 20]}, polars)
+    right = make_frame({"rk": [2, 3], "b": [200, 300]}, polars)
+    op = JoinOp(how="inner", left_on="lk", right_on="rk")
+    with st.config(force_polars=polars):
+        result = run_op(op, left, right)
+
+    assert [2] == to_list(result["lk"])
+    assert [200] == to_list(result["b"])
+
+
+@pytest.mark.parametrize("polars", [False, True])
+def test_join_op_merge_on_key_with_suffixes(polars):
+    left = make_frame({"k": [1, 2, 3], "a": [10, 20, 30]}, polars)
+    right = make_frame({"k": [2, 3, 4], "a": [200, 300, 400]}, polars)
+    op = JoinOp(how="inner", left_on="k", right_on="k",
+                suffixes=("_L", "_R"))
+    with st.config(force_polars=polars):
+        result = run_op(op, left, right)
+
+    assert [2, 3] == to_list(result["k"])
+    assert [20, 30] == to_list(result["a_L"])
+    assert [200, 300] == to_list(result["a_R"])
+
+
+@pytest.mark.parametrize("polars", [False, True])
+def test_join_op_wrong_input_count_raises(polars):
+    op = JoinOp(how="inner", left_on="k", right_on="k")
+    data = make_frame({"k": [1]}, polars)
+    with st.config(force_polars=polars):
+        with pytest.raises(ValueError, match="expects exactly 2 inputs"):
+            run_op(op, data)
+
+
 class TestJoinOpPandas(unittest.TestCase):
-    """`JoinOp.process` on the pandas backend."""
-
-    def test_merge_on_key(self):
-        left = pd.DataFrame({"k": [1, 2, 3], "a": [10, 20, 30]})
-        right = pd.DataFrame({"k": [2, 3, 4], "b": [200, 300, 400]})
-        op = JoinOp(how="inner", left_on="k", right_on="k")
-        result = run_op(op, left, right)
-        self.assertEqual([2, 3], result["k"].tolist())
-        self.assertEqual([20, 30], result["a"].tolist())
-        self.assertEqual([200, 300], result["b"].tolist())
-
-    def test_merge_left_on_right_on_distinct(self):
-        left = pd.DataFrame({"lk": [1, 2], "a": [10, 20]})
-        right = pd.DataFrame({"rk": [2, 3], "b": [200, 300]})
-        op = JoinOp(how="inner", left_on="lk", right_on="rk")
-        result = run_op(op, left, right)
-        self.assertEqual([2], result["lk"].tolist())
-        self.assertEqual([2], result["rk"].tolist())
+    """Pandas-only `JoinOp.process` index join coverage."""
 
     def test_join_index_based_with_suffixes(self):
         left = pd.DataFrame({"x": [1, 2, 3]}, index=["a", "b", "c"])
@@ -47,15 +91,10 @@ class TestJoinOpPandas(unittest.TestCase):
         result = run_op(op, left, right)
         self.assertEqual({"x", "y", "z"}, set(result.index.tolist()))
 
-    def test_wrong_input_count_raises(self):
-        op = JoinOp(how="inner", left_on="k", right_on="k")
-        with self.assertRaises(ValueError):
-            run_op(op, pd.DataFrame({"k": [1]}))
-
-    def test_polars_not_implemented(self):
+    def test_polars_index_based_join_raises(self):
         with force_polars():
-            op = JoinOp(how="inner", left_on="k", right_on="k")
-            with self.assertRaises(NotImplementedError):
+            op = JoinOp(how="left", left_index=True, right_index=True)
+            with self.assertRaises(RuntimeError):
                 run_op(op, pl.DataFrame({"k": [1]}), pl.DataFrame({"k": [1]}))
 
 

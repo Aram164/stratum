@@ -33,7 +33,25 @@ class JoinOp(Op):
         right_df = inputs[1]
 
         if FLAGS.force_polars:
-            raise NotImplementedError("JoinOp Polars backend is not implemented yet.")
+            if self.left_index or self.right_index:
+                raise RuntimeError()
+
+            left_columns = list(left_df.columns)
+            common_columns = [col for col in right_df.columns if col in left_columns]
+
+            result = left_df.join(
+                right_df,
+                how=self.how,
+                left_on=self.left_on,
+                right_on=self.right_on,
+                suffix=self.suffixes[1],
+            )
+            mapping = {
+                col: col + self.suffixes[0]
+                for col in common_columns
+                if col != self.left_on and col != self.right_on
+            }
+            return result.rename(mapping=mapping)
         else:
             return left_df.merge(
                 right_df,
