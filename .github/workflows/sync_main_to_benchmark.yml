@@ -2,6 +2,8 @@ name: sync-main-to-benchmark
 on:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   merge:
     runs-on: ubuntu-latest
