@@ -44,7 +44,7 @@ def test_join_op_merge_left_on_right_on_distinct(polars):
     with st.config(force_polars=polars):
         result = run_op(op, left, right)
 
-    assert [2] == to_list(result["lk"])
+    assert [2] == to_list(result["lk"]) == to_list(result["rk"])
     assert [200] == to_list(result["b"])
 
 
@@ -60,6 +60,84 @@ def test_join_op_merge_on_key_with_suffixes(polars):
     assert [2, 3] == to_list(result["k"])
     assert [20, 30] == to_list(result["a_L"])
     assert [200, 300] == to_list(result["a_R"])
+
+
+@pytest.mark.parametrize("polars", [False, True])
+def test_outer_join(polars):
+    left = make_frame({"k": [1, 2, 3], "a": [10, 20, 30]}, polars)
+    right = make_frame({"k": [2, 3, 4], "a": [200, 300, 400]}, polars)
+
+    op = JoinOp(how="outer", left_on="k", right_on="k")
+    with st.config(force_polars=polars):
+        result = run_op(op, left, right)
+
+    if polars:                  # this is needed since row order after an outer-join is non deterministic
+        result = result.sort("k")
+    else:
+        result = result.sort_values("k").reset_index(drop=True)
+
+    assert [1, 2, 3, 4] == to_list(result["k"])
+
+    a_x = to_list(result["a_x"])
+    a_y = to_list(result["a_y"])
+
+    assert a_x[:3] == [10, 20, 30]
+    assert a_y[1:] == [200, 300, 400]
+
+    if polars:     # polars uses None to represent missing values compared to nan in pandas case
+        assert a_x[3] is None
+        assert a_y[0] is None
+    else:
+        assert pd.isna(a_x[3])
+        assert pd.isna(a_y[0])
+    
+@pytest.mark.parametrize("polars", [False, True])
+def test_multi_column_join_key(polars):
+    left = make_frame({
+        "k1": [1, 1, 2],
+        "k2": ["a", "b", "a"],
+        "a": [10, 11, 20],
+        "b": ["L1", "L2", "L3"],
+    }, polars)
+    right = make_frame({
+        "k1": [1, 2],
+        "k2": ["a", "a"],
+        "a": [100, 200],
+        "c": ["R1", "R2"],
+    }, polars)
+
+    op = JoinOp(how="inner", left_on=["k1", "k2"], right_on=["k1", "k2"])
+    with st.config(force_polars=polars):
+        result = run_op(op, left, right)
+
+    assert ["k1", "k2", "a_x", "b", "a_y", "c"] == list(result.columns)
+    assert [1, 2] == to_list(result["k1"])
+    assert ["a", "a"] == to_list(result["k2"])
+    assert [10, 20] == to_list(result["a_x"])
+    assert [100, 200] == to_list(result["a_y"])
+    assert ["L1", "L3"] == to_list(result["b"])
+    assert ["R1", "R2"] == to_list(result["c"])
+
+
+@pytest.mark.parametrize("polars", [False, True])
+def test_wo_key_join(polars):
+    left = make_frame({
+        "k": [1, 2, 3],
+        "a": [10, 20, 30],
+    }, polars)
+    right = make_frame({
+        "k": [2, 3, 4],
+        "b": [200, 300, 400],
+    }, polars)
+
+    op = JoinOp(how="inner")
+    with st.config(force_polars=polars):
+        result = run_op(op, left, right)
+
+    assert ["k", "a", "b"] == list(result.columns)
+    assert [2, 3] == to_list(result["k"])
+    assert [20, 30] == to_list(result["a"])
+    assert [200, 300] == to_list(result["b"])
 
 
 @pytest.mark.parametrize("polars", [False, True])
@@ -94,7 +172,7 @@ class TestJoinOpPandas(unittest.TestCase):
     def test_polars_index_based_join_raises(self):
         with force_polars():
             op = JoinOp(how="left", left_index=True, right_index=True)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(NotImplementedError):
                 run_op(op, pl.DataFrame({"k": [1]}), pl.DataFrame({"k": [1]}))
 
 

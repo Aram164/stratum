@@ -34,24 +34,43 @@ class JoinOp(Op):
 
         if FLAGS.force_polars:
             if self.left_index or self.right_index:
-                raise RuntimeError()
+                raise NotImplementedError("JoinOp Polars backend does not support index-based joins.")
+            
 
-            left_columns = list(left_df.columns)
-            common_columns = [col for col in right_df.columns if col in left_columns]
+            left_columns_list = list(left_df.columns)
+            common_columns = [col for col in right_df.columns if col in left_columns_list]
+            no_defined_join_columns = self.left_on is None and self.right_on is None
+            how = "full" if self.how == "outer" else self.how
+            left_on = common_columns if no_defined_join_columns else self.left_on
+            right_on = common_columns if no_defined_join_columns else self.right_on
 
             result = left_df.join(
                 right_df,
-                how=self.how,
-                left_on=self.left_on,
-                right_on=self.right_on,
+                how=how,
+                left_on=left_on,
+                right_on=right_on,
                 suffix=self.suffixes[1],
+                coalesce = self.left_on == self.right_on # keep the different key-rows and get rid off identical ones 
             )
-            mapping = {
+            if no_defined_join_columns:
+                return result 
+            if isinstance(self.left_on,str) and not self.left_on is None:
+                mapping = {
                 col: col + self.suffixes[0]
                 for col in common_columns
                 if col != self.left_on and col != self.right_on
             }
-            return result.rename(mapping=mapping)
+                return result.rename(mapping=mapping)
+            
+            elif isinstance(self.left_on,(list,tuple)) and not self.left_on is None:
+                mapping = {
+                col: col + self.suffixes[0]
+                for col in common_columns
+                if col not in set(self.left_on) and col not in set(self.right_on)
+            }
+                return result.rename(mapping=mapping)
+            
+            
         else:
             return left_df.merge(
                 right_df,
