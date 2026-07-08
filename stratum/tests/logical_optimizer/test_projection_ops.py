@@ -5,11 +5,13 @@ import pandas as pd
 import polars as pl
 import stratum as st
 from stratum.optimizer._optimize import OptConfig
+from skrub import selectors
 from stratum.optimizer.ir._projection_ops import (
-    ApplyUDFOp, AssignOp, DatetimeConversionOp, DropOp, GetAttrProjectionOp,
-    MetadataOp, ProjectionOp, StringMethodOp, make_datetime_conversion_op)
+    ApplyUDFOp, AssignOp, ColumnSelectorOp, DatetimeConversionOp, DropOp,
+    GetAttrProjectionOp, MetadataOp, ProjectionOp, StringMethodOp,
+    make_datetime_conversion_op)
 from stratum.optimizer.ir._ops import (CallOp, GetItemOp, MethodCallOp, OperandRef,
-                                       OutputType)
+                                       OutputType, TransformerOp)
 from stratum.tests.logical_optimizer.test_dataframe_ops import (
     PolarsTestCase, _inp, _inputs_for, force_polars, optimize, run_op)
 
@@ -257,6 +259,68 @@ class TestStringMethodOp(unittest.TestCase):
             op = StringMethodOp(method="count", args=("1",))
             result = run_op(op, pl.Series(["a1", "bb", "c1"]))
         self.assertEqual([1, 0, 1], result.to_list())
+
+
+class TestColumnSelectorExtraction(unittest.TestCase):
+    """skb.select(selector) -- an Apply of SelectCols -- becomes a ColumnSelectorOp."""
+
+    def setUp(self):
+        self.df = pd.DataFrame({"a": [1.0, 2.0], "s": ["x", "y"]})
+
+    def _one(self, ops, cls):
+        found = [o for o in ops if isinstance(o, cls)]
+        self.assertEqual(1, len(found), f"expected exactly one {cls.__name__}")
+        return found[0]
+
+    def test_select_converts_to_column_selector(self):
+        data = st.as_data_op(self.df)
+        sel = selectors.numeric()
+        ops = optimize(data.skb.select(sel), OptConfig(dataframe_ops=True))
+        col_sel = self._one(ops, ColumnSelectorOp)
+        self.assertIs(sel, col_sel.selector)
+        self.assertIs(OutputType.FRAME, col_sel.output_type)
+        # the SelectCols TransformerOp is fully replaced
+        self.assertEqual([], [o for o in ops if isinstance(o, TransformerOp)])
+
+    def test_select_by_names_converts(self):
+        data = st.as_data_op(self.df)
+        ops = optimize(data.skb.select(["a"]), OptConfig(dataframe_ops=True))
+        self.assertEqual(["a"], self._one(ops, ColumnSelectorOp).selector)
+
+
+class TestColumnSelectorProcess(unittest.TestCase):
+    """ColumnSelectorOp resolves the selector at fit and reuses the list at predict."""
+
+    def test_fit_resolves_and_selects_pandas(self):
+        op = ColumnSelectorOp(selector=selectors.numeric())
+        result = run_op(op, pd.DataFrame({"a": [1.0], "s": ["x"]}))
+        self.assertEqual(["a"], list(result.columns))
+        self.assertEqual(["a"], op.selected_columns)
+
+    def test_predict_reuses_stored_columns(self):
+        # A new numeric column appearing at predict time is NOT picked up: the
+        # fit-time resolution is what transforms (SelectCols semantics).
+        op = ColumnSelectorOp(selector=selectors.numeric())
+        run_op(op, pd.DataFrame({"a": [1.0], "s": ["x"]}))
+        result = run_op(op, pd.DataFrame({"a": [2.0], "b": [3.0], "s": ["y"]}),
+                        mode="predict")
+        self.assertEqual(["a"], list(result.columns))
+
+    def test_predict_before_fit_raises(self):
+        op = ColumnSelectorOp(selector=selectors.numeric())
+        with self.assertRaises(RuntimeError):
+            run_op(op, pd.DataFrame({"a": [1.0]}), mode="predict")
+
+    def test_polars(self):
+        op = ColumnSelectorOp(selector=selectors.numeric())
+        with force_polars():
+            result = run_op(op, pl.DataFrame({"a": [1.0], "s": ["x"]}))
+        self.assertEqual(["a"], result.columns)
+
+    def test_clone_resets_resolution(self):
+        op = ColumnSelectorOp(selector=selectors.numeric())
+        run_op(op, pd.DataFrame({"a": [1.0]}))
+        self.assertIsNone(op.clone().selected_columns)
 
 
 class TestMakeDatetimeConversionOp(unittest.TestCase):

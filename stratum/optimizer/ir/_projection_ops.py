@@ -1,12 +1,26 @@
 from typing import Callable
+from skrub.selectors._base import make_selector
 from stratum.optimizer.ir._ops import (OperandRef, OutputType, CallOp, GetAttrOp,
-                                       MethodCallOp, Op, _resolve_args, _resolve_kwargs)
+                                       MethodCallOp, Op, TransformerOp, _resolve_args, _resolve_kwargs)
 from stratum._config import FLAGS
 import pandas as pd
 import polars as pl
 from numpy import sin, cos
 import logging
 logger = logging.getLogger(__name__)
+
+
+def resolve_selector_columns(frame, selector) -> list[str]:
+    """Resolve a skrub selector (or column name / list of names) against ``frame``.
+
+    Returns the concrete column-name list. Selectors are *deferred*: which columns
+    match (e.g. ``numeric()``) depends on the data, so resolution can only happen
+    once a frame with a schema is available. skrub's dispatch handles both pandas
+    and polars frames.
+
+    # TODO with schema propagation we can resolute the column name list at compile time
+    """
+    return make_selector(selector).expand(frame)
 
 # pandas ``.str.<method>`` name -> polars ``.str.<method>`` name, for the methods
 # whose names differ between backends. Methods that match (contains, replace, ...)
@@ -111,6 +125,42 @@ class DropOp(ProjectionOp):
             return _obj.drop(*_args)
         else:
             return _obj.drop(*_args, **_kwargs)
+
+
+class ColumnSelectorOp(Op):
+    """A column selection by (deferred) skrub selector: keeps rows, restricts columns.
+
+    Produced from ``skb.select(cols)``. Matches ``SelectCols`` semantics: the selector resolves against the schema at
+    fit time and the *stored* column list is reused at predict time.
+    """
+    fields = ["selector"]
+
+    def __init__(self, selector, inputs: list[Op] = None, outputs: list[Op] = None):
+        super().__init__(name=f"select[{selector!r}]", inputs=inputs, outputs=outputs)
+        self.selector = selector
+        self.selected_columns = None
+        self.output_type = OutputType.FRAME
+
+    def process(self, mode: str, inputs: list):
+        frame = inputs[0]
+        if mode == "fit_transform":
+            self.selected_columns = resolve_selector_columns(frame, self.selector)
+        elif self.selected_columns is None:
+            raise RuntimeError(
+                f"{self} was asked to transform before the selector was resolved; "
+                f"run fit_transform first.")
+        if FLAGS.force_polars:
+            return frame.select(self.selected_columns)
+        return frame[self.selected_columns]
+
+
+def make_column_selector_op(op: TransformerOp) -> ColumnSelectorOp:
+    """Rewrite a ``TransformerOp`` wrapping skrub's ``SelectCols`` into a
+    :class:`ColumnSelectorOp` carrying the selector itself."""
+    new_op = ColumnSelectorOp(selector=op.estimator.cols,
+                              inputs=op.inputs, outputs=op.outputs)
+    op.replace_output_of_inputs(new_op)
+    return new_op
 
 
 class ApplyUDFOp(ProjectionOp):

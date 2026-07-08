@@ -1,7 +1,8 @@
 from stratum.optimizer.ir._ops import (OperandRef, OutputType, is_frame_like, BaseEstimatorOp, BinOp, UnaryOp, CallOp, ChoiceOp, GetAttrOp, GetItemOp,
-                                       MethodCallOp, Op, ValueOp)
+                                       MethodCallOp, Op, TransformerOp, ValueOp)
 from pandas import DataFrame
 from polars import DataFrame as PolarsDataFrame
+from skrub import SelectCols
 import pandas as pd
 import polars as pl
 import numpy as np
@@ -18,9 +19,10 @@ from stratum.optimizer.ir._aggregation_ops import (
     AggregateOp, GroupedDataframeOp, _AGG_METHODS, _AGG_FUNCS, _is_groupby_op,
     _is_aggregation, _extract_grouping, _extract_aggregations, make_aggregate_op)
 from stratum.optimizer.ir._projection_ops import (
-    MetadataOp, ProjectionOp, DropOp, ApplyUDFOp, AssignOp, DatetimeConversionOp,
-    GetAttrProjectionOp, StringMethodOp, make_datetime_conversion_op,
-    make_frame_get_attr, make_string_method_op)
+    ColumnSelectorOp, MetadataOp, ProjectionOp, DropOp, ApplyUDFOp, AssignOp,
+    DatetimeConversionOp, GetAttrProjectionOp, StringMethodOp,
+    make_column_selector_op, make_datetime_conversion_op, make_frame_get_attr,
+    make_string_method_op, resolve_selector_columns)
 from stratum.optimizer.ir._join_ops import (
     JoinOp, _MERGE_POSITIONAL, _JOIN_POSITIONAL, _JOIN_OP_FIELDS, make_join_op,
     _make_chained_join_op)
@@ -155,6 +157,11 @@ def extract_dataframe_op(op: Op, root: Op, selection_op = True) -> tuple[Op, boo
 
         elif isinstance(op, BaseEstimatorOp):
             op.output_type = OutputType.FRAME
+            # skrub implements `skb.select(cols)` as an Apply of its SelectCols
+            # transformer; surface the selector as a dedicated ColumnSelectorOp.
+            if (isinstance(op, TransformerOp) and isinstance(op.estimator, SelectCols)
+                    and not op.param_refs and not isinstance(op.y, OperandRef)):
+                new_op = make_column_selector_op(op)
 
         elif isinstance(op, ChoiceOp):
             # Propagate a shared frame type across all outcomes; mixed kinds fall
