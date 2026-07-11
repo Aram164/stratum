@@ -16,6 +16,7 @@ from stratum.optimizer.ir._ops import (
     VariableOp, check_estm_inputs, estimator_parallel_config,
     estm_supports_polars, process_estimator_task, process_transformer_task,
 )
+from stratum.optimizer.ir._numeric_ops import NumericOp, NumericOpType
 from stratum.optimizer._optimize import optimize as optimize_
 
 
@@ -325,3 +326,29 @@ class TestEdgeDedup(unittest.TestCase):
         op.add_output(out)
         op.add_output(out)
         self.assertEqual(op.outputs, [out])
+
+    def test_replace_input_dedups_existing_input_before_old_input(self):
+        value, old = ValueOp(1), ValueOp(2)
+        op = NumericOp(
+            type=NumericOpType.ADD,
+            inputs=[value, old],
+            opt_operand=OperandRef(1),
+        )
+
+        op.replace_input(old, value)
+
+        self.assertEqual(op.inputs, [value])
+        self.assertEqual(op.opt_operand, OperandRef(0))
+
+    def test_replace_input_dedups_existing_input_after_old_input(self):
+        old, value = ValueOp(1), ValueOp(2)
+        op = NumericOp(
+            type=NumericOpType.ADD,
+            inputs=[old, value],
+            opt_operand=OperandRef(0),
+        )
+
+        op.replace_input(old, value)
+
+        self.assertEqual(op.inputs, [value])
+        self.assertEqual(op.opt_operand, OperandRef(0))

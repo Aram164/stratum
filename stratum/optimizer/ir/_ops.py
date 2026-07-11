@@ -267,24 +267,79 @@ class Op():
     def num_input_operands(self) -> int:
         return len(self.inputs)
 
-    def add_output(self, output: Op):
-        """Add an output edge, de-duplicating so an op appears at most once."""
-        for out_ in self.outputs:
-            if out_ is output:
-                return
-        self.outputs.append(output)
-
-    def add_input(self, input: Op) -> int:
-        """Add an input edge, de-duplicating. Returns the operand index of `input`."""
+    def _check_dup_in_inputs(self, input: Op) -> int | None:
+        """Return the input index if already present, otherwise None."""
         for i, in_ in enumerate(self.inputs):
             if in_ is input:
                 return i
+        return None
+
+    def _check_dup_in_outputs(self, output: Op) -> int | None:
+        """Return the output index if already present, otherwise None."""
+        for i, out_ in enumerate(self.outputs):
+            if out_ is output:
+                return i
+        return None
+
+    def add_output(self, output: Op) -> int:
+        """Add an output edge, de-duplicating. Returns the output index."""
+        idx = self._check_dup_in_outputs(output)
+        if idx is not None:
+            return idx
+        self.outputs.append(output)
+        return len(self.outputs) - 1
+
+    def add_input(self, input: Op) -> int:
+        """Add an input edge, de-duplicating. Returns the operand index of `input`."""
+        idx = self._check_dup_in_inputs(input)
+        if idx is not None:
+            return idx
         self.inputs.append(input)
         return len(self.inputs) - 1
 
+    def _remap_refs(self, value, old_ref, new_ref):
+        """Recursively update OperandRefs after removing an input slot."""
+        if isinstance(value, OperandRef):
+            if value.k == old_ref:
+                return OperandRef(new_ref)
+            elif value.k > old_ref:
+                return OperandRef(value.k - 1)
+        if isinstance(value, tuple):
+            return tuple(self._remap_refs(v, old_ref, new_ref) for v in value)
+        if isinstance(value, list):
+            return [self._remap_refs(v, old_ref, new_ref) for v in value]
+        if isinstance(value, dict):
+            return {k: self._remap_refs(v, old_ref, new_ref) for k, v in value.items()}
+        return value
+
+    def _dedupe_input_refs(self, old_ref, new_ref):
+        """Remove input slot old_ref and redirect its OperandRefs to new_ref.
+
+        OperandRefs pointing after the removed slot are shifted left by one.
+        """
+        self.inputs.pop(old_ref)
+        for field in getattr(type(self), "fields", []):
+            value = getattr(self, field)
+            correct_value = self._remap_refs(value, old_ref, new_ref)
+            if correct_value is not value:
+                setattr(self, field, correct_value)
+
     def replace_input(self, old_input: Op, new_input: Op):
+        """Replace an input edge, deduplicating OperandRef-based inputs when needed.
+
+        If replacing old_input with new_input would create a duplicate input, keep
+        the leftmost slot and remap OperandRefs away from the removed slot.
+        """
         for i, in_ in enumerate(self.inputs):
             if in_ is old_input:
+                idx = self._check_dup_in_inputs(new_input)
+                if idx is not None and not self.is_choice():
+                    if idx < i:
+                        self._dedupe_input_refs(old_ref=i, new_ref=idx)
+                    else:
+                        self.inputs[i] = new_input
+                        self._dedupe_input_refs(old_ref=idx, new_ref=i)
+                    return
                 self.inputs[i] = new_input
                 return
         raise ValueError(f"Input {old_input} not found in {self.__class__.__name__}.")
