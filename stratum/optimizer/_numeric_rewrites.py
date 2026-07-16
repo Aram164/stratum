@@ -26,7 +26,10 @@ def match_identity_operation(op_cls, type1, const, reversed=None):
     """
     def match(op1):
         if isinstance(op1, op_cls) and op1.type == type1:
-            if op1.opt_operand is None and op1.constant == const:
+            # isinstance guard: an ndarray constant would raise
+            # "truth value of an array is ambiguous" on `== const`.
+            if op1.opt_operand is None and isinstance(op1.constant, (int, float)) \
+                    and op1.constant == const:
                 if reversed is None or op1.reversed == reversed:
                     return (op1,)
         return None
@@ -172,4 +175,9 @@ eliminate_identity_subtract = rewrite_pass(
 eliminate_any_mul_zero = rewrite_pass(
     match_identity_operation(NumericOp, NumericOpType.MULTIPLY, 0),
     fold_to_zero,
+)
+
+eliminate_div_by_one = rewrite_pass(
+    match_identity_operation(NumericOp, NumericOpType.DIVIDE, 1, reversed=False),
+    eliminate_single_op_chain_root_safe,
 )
