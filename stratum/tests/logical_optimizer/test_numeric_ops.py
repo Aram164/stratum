@@ -347,3 +347,12 @@ class TestNumericOps(unittest.TestCase):
         self.assertFalse(any(isinstance(o, NumericOp) and o.type == NumericOpType.MULTIPLY for o in out))
         zero = next(o for o in out if isinstance(o, ValueOp))
         self.assertEqual(zero.process("fit", []), 0.0)
+   
+    def test_rewrite_log_plus_one(self):
+        df = st.as_data_op(3)
+        add_expr = df + 1
+        t1 = add_expr.skb.apply_func(np.log)
+        out, *_ = optimize(t1)
+        
+        op = next(o for o in out if isinstance(o, NumericOp) and o.type == NumericOpType.LOG1P)
+        self.assertAlmostEqual(op.process("fit", {}, [3]), np.log1p(3))

@@ -215,3 +215,20 @@ eliminate_div_by_one = rewrite_pass(
     match_identity_operation(NumericOp, NumericOpType.DIVIDE, 1, reversed=False),
     eliminate_single_op_chain_root_safe,
 )
+
+def match_add_one_then_log(op: Op):
+    if (isinstance(op, NumericOp) and 
+            op.type is NumericOpType.ADD and 
+            op.constant == 1.0 and 
+            len(op.outputs) == 1):
+        
+        op2 = op.outputs[0]
+        if isinstance(op2, NumericOp) and op2.type is NumericOpType.LOG:
+            return (op, op2)
+    return None
+
+_replace_with_log1p = make_replace_two_op_chain_root_safe(
+    lambda: NumericOp(inputs=[], outputs=[], type=NumericOpType.LOG1P)
+)
+
+rewrite_log_plus_one = rewrite_pass(match_add_one_then_log, _replace_with_log1p)
