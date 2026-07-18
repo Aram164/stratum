@@ -10,7 +10,9 @@ from stratum.optimizer.physical import (
     build_default_physical_registry,
 )
 from stratum.optimizer.physical._transform_execs import (RustOneHotEncoder,
-                                                        RustStringEncoder)
+                                                        RustStringEncoder,
+                                                        SkrubStringEncoder,
+                                                        StringEncoderOp)
 
 
 def test_default_registry_has_logical_surface_and_adapter_candidates():
@@ -21,24 +23,43 @@ def test_default_registry_has_logical_surface_and_adapter_candidates():
     assert ConcatOp in CURRENT_LOGICAL_OPERATOR_TYPES
     assert NumericOp in CURRENT_LOGICAL_OPERATOR_TYPES
     assert "rust" in {backend.name for backend in CURRENT_BACKENDS}
+    # StringEncoder migrated to its own physical op, so only OneHotEncoder's rust
+    # kernel is still keyed on the logical TransformerOp.
     rust_candidates = registry.candidates_for(TransformerOp, backend_name="rust")
     sklearn_candidates = registry.candidates_for(TransformerOp, backend_name="sklearn-skrub")
-    assert len(rust_candidates) == 2
+    assert len(rust_candidates) == 1
     assert all(candidate.backend_name == "rust" for candidate in rust_candidates)
     assert len(sklearn_candidates) == 1
     assert len(registry.candidates_for(EstimatorOp, backend_name="sklearn-skrub")) == 1
+    # The migrated StringEncoder physical op carries both a skrub and a rust impl.
+    assert len(registry.candidates_for(StringEncoderOp, backend_name="rust")) == 1
+    assert len(registry.candidates_for(StringEncoderOp, backend_name="sklearn-skrub")) == 1
 
 
 def test_rust_kernels_are_class_based_impls():
-    # Every Rust kernel is a class-based @rust_impl keyed on the logical
-    # TransformerOp; there is no separate Rust registration list.
+    # After unification every Rust kernel is a class-based @rust_impl: OneHotEncoder
+    # is still keyed on the logical TransformerOp, StringEncoder on its own op.
     registry = build_default_physical_registry()
 
-    rust_candidates = registry.candidates_for(TransformerOp, backend_name="rust")
+    ohe_rust = registry.candidates_for(TransformerOp, backend_name="rust")
+    se_rust = registry.candidates_for(StringEncoderOp, backend_name="rust")
 
-    assert len(rust_candidates) == 2
-    assert all(candidate.backend_name == "rust" for candidate in rust_candidates)
-    assert {c.impl_class for c in rust_candidates} == {RustStringEncoder, RustOneHotEncoder}
+    assert len(ohe_rust) == 1 and ohe_rust[0].impl_class is RustOneHotEncoder
+    assert len(se_rust) == 1 and se_rust[0].impl_class is RustStringEncoder
+
+
+def test_backend_decorators_stamp_capability_hints():
+    # Per-backend decorators carry backend-specific info for the planner: Rust
+    # releases the GIL and is data-parallel; the skrub reference impl neither.
+    registry = build_default_physical_registry()
+
+    (rust,) = registry.candidates_for(StringEncoderOp, backend_name="rust")
+    (skrub,) = registry.candidates_for(StringEncoderOp, backend_name="sklearn-skrub")
+
+    assert rust.impl_class is RustStringEncoder
+    assert rust.releases_gil and rust.data_parallel
+    assert skrub.impl_class is SkrubStringEncoder
+    assert not skrub.releases_gil and skrub.data_parallel
 
 
 def test_registry_registers_and_queries_impls_by_logical_type():

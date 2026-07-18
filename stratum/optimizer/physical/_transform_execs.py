@@ -1,32 +1,62 @@
-"""Physical transformer operators (native Rust kernels).
+"""Physical transformer operators.
 
-The native Rust transformer kernels register as ordinary class-based physical
-impls (``@rust_impl``), keyed on the logical ``TransformerOp`` they refine --
-there is no separate Rust registry. Implementation selection swaps a supported
-``TransformerOp`` to the Rust impl class in place, and its ``on_impl_selected``
-swaps the op's estimators for the Rust adapter at plan time, so ``process`` runs
-the Rust kernel with no run-time decision left.
+Lowering turns a logical :class:`~stratum.optimizer.ir._ops.TransformerOp`
+wrapping a supported estimator into an *abstract* physical transformer op -- one
+per estimator kind -- mirroring how a ``DataSourceOp`` lowers to
+``ReadCSV``/``ReadParquet``/... (one logical op, many concrete shapes).
+Implementation selection then swaps the abstract op to a concrete backend impl:
+the sklearn/skrub reference (``@physical_impl``) or the native Rust kernel
+(``@rust_impl``).
+
+Migration is incremental. Only estimators with a branch in
+:func:`lower_transformer` move to a dedicated physical op; every other
+``TransformerOp`` returns ``None`` from the rule, passes through lowering
+unchanged, and keeps running via the ``sklearn-skrub`` impl registered on
+``TransformerOp`` itself. First migrated: skrub's ``StringEncoder`` (skrub vs
+Rust).
 """
 from __future__ import annotations
 
 from typing import Any
+
+from skrub import StringEncoder as _SkrubStringEncoder
 
 from stratum.adapters.one_hot_encoder import (RustyOneHotEncoder,
                                              supports_rust_one_hot_encoder)
 from stratum.adapters.string_encoder import (RustyStringEncoder,
                                              supports_rust_string_encoder)
 from stratum.optimizer.ir._ops import TransformerOp
+from stratum.optimizer.physical._lowering import lowering_rule
 from stratum.optimizer.physical._physical_ops import PhysicalOp
-from stratum.optimizer.physical._registry import rust_impl
+from stratum.optimizer.physical._registry import (OperatorFamily, rust_impl,
+                                                 sklearn_skrub_impl)
 
 
-@rust_impl(of=TransformerOp)
-class RustStringEncoder(TransformerOp, PhysicalOp):
-    """Native Rust string encoder: swaps in the ``RustyStringEncoder`` adapter at
-    plan time, so ``process`` runs the Rust kernel with no run-time decision left."""
+class StringEncoderOp(TransformerOp, PhysicalOp):
+    """Abstract physical StringEncoder transformer.
+
+    Subclasses the logical ``TransformerOp`` it lowers from, so it carries the
+    same estimator state and its concrete impls inherit ``BaseEstimatorOp.process``
+    unchanged -- they differ only in *which* estimator object ``process`` runs
+    (the plain skrub encoder, or the Rust adapter swapped in at plan time).
+    """
+    is_abstract = True
+
+
+@sklearn_skrub_impl(of=StringEncoderOp)
+class SkrubStringEncoder(StringEncoderOp):
+    """Reference impl: runs the skrub ``StringEncoder`` as-is."""
+    is_abstract = False
+
+
+@rust_impl(of=StringEncoderOp)
+class RustStringEncoder(StringEncoderOp):
+    """Native Rust impl: swaps in the ``RustyStringEncoder`` adapter at plan time,
+    so ``process`` runs the Rust kernel with no run-time decision left."""
+    is_abstract = False
 
     @classmethod
-    def supports(cls, op: TransformerOp, ctx: Any) -> bool:
+    def supports(cls, op: StringEncoderOp, ctx: Any) -> bool:
         supported, _ = supports_rust_string_encoder(op.original_estimator)
         return supported
 
@@ -45,6 +75,11 @@ def _as_rusty_string_encoder(estimator) -> RustyStringEncoder:
     return rusty
 
 
+# --- OneHotEncoder -----------------------------------------------------------
+# Not yet lowered to its own physical op, so its Rust kernel is keyed on the
+# logical TransformerOp (same shape as the migrated StringEncoder impls, just
+# without an abstract parent op). Selection swaps a supported TransformerOp to
+# this class and its on_impl_selected swaps in the Rust adapter.
 @rust_impl(of=TransformerOp, output_format="matrix")
 class RustOneHotEncoder(TransformerOp, PhysicalOp):
     """Native Rust one-hot encoder: swaps in ``RustyOneHotEncoder`` at plan time."""
@@ -67,3 +102,28 @@ def _as_rusty_one_hot_encoder(estimator) -> RustyOneHotEncoder:
         rusty = RustyOneHotEncoder(**estimator.get_params(deep=False))
     rusty._stratum_force_rust = True
     return rusty
+
+
+@lowering_rule(TransformerOp)
+def lower_transformer(op: TransformerOp, ctx) -> PhysicalOp | None:
+    """Lower a ``TransformerOp`` to the matching abstract physical transformer.
+
+    Only estimators with a dedicated physical op are lowered; anything else
+    returns ``None`` and stays a logical ``TransformerOp``.
+    """
+    if isinstance(op.original_estimator, _SkrubStringEncoder):
+        return StringEncoderOp(
+            estimator=op.estimator, y=op.y, cols=op.cols, how=op.how,
+            allow_reject=op.allow_reject, unsupervised=op.unsupervised,
+            kwargs=op.kwargs, param_refs=op.param_refs,
+        )
+    return None
+
+
+# The transforms family: abstract physical types produced by lowering TransformerOp.
+TRANSFORMS_FAMILY = OperatorFamily(
+    name="transforms",
+    op_types=(StringEncoderOp,),
+    default_backends=("sklearn-skrub", "rust"),
+    notes="Physical transformer operators lowered from TransformerOp.",
+)

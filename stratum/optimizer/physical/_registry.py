@@ -349,7 +349,7 @@ def build_default_physical_registry() -> PhysicalRegistry:
     # Importing each exec module triggers its @physical_impl registrations
     # (including the Rust kernels, now class-based @rust_impl impls).
     from stratum.optimizer.physical._source_execs import SOURCES_FAMILY  # noqa: F401
-    from stratum.optimizer.physical import _transform_execs  # noqa: F401
+    from stratum.optimizer.physical._transform_execs import TRANSFORMS_FAMILY  # noqa: F401
     from stratum.optimizer.physical import _concat_execs  # noqa: F401
     from stratum.optimizer.physical import _join_execs  # noqa: F401
     from stratum.optimizer.physical import _aggregation_execs  # noqa: F401
@@ -359,6 +359,7 @@ def build_default_physical_registry() -> PhysicalRegistry:
     from stratum.optimizer.physical import _getitem_execs  # noqa: F401
 
     registry.register_family(SOURCES_FAMILY)
+    registry.register_family(TRANSFORMS_FAMILY)
     for impl in _DECORATED_IMPLS:
         registry.register(impl)
     _register_current_estimator_impls(registry)

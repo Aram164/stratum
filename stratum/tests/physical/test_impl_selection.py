@@ -113,7 +113,7 @@ class TestRustKernelPlanTimeBinding(unittest.TestCase):
         self.encoder = encoder
 
     def test_estimators_swapped_at_plan_time(self):
-        df = pd.DataFrame({"a": ["x", "y", "z", "w"]})
+        df = pd.DataFrame({"a": ["apple", "banana", "cherry", "orange"]})
         data = st.as_data_op(df).skb.apply(self.encoder, cols=["a"])
         with st.config(rust_backend=True):
             ops, *_ = optimize(data)
@@ -125,7 +125,7 @@ class TestRustKernelPlanTimeBinding(unittest.TestCase):
         self.assertTrue(op.original_estimator._stratum_force_rust)
 
     def test_no_swap_when_rust_disabled(self):
-        df = pd.DataFrame({"a": ["x", "y", "z", "w"]})
+        df = pd.DataFrame({"a": ["apple", "banana", "cherry", "orange"]})
         data = st.as_data_op(df).skb.apply(self.encoder, cols=["a"])
         with st.config(rust_backend=False):
             ops, *_ = optimize(data)

@@ -16,6 +16,7 @@ from .physical._lowering import lower_to_physical
 from .physical._impl_selection import select_implementations
 # Importing the physical exec modules registers their lowering rules.
 from .physical import _source_execs  # noqa: F401
+from .physical import _transform_execs  # noqa: F401
 from stratum.utils._skrub_graph import build_graph
 import logging
 from stratum._config import FLAGS
