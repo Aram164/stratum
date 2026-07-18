@@ -10,7 +10,8 @@ import stratum as st
 from stratum._config import FLAGS
 from stratum.optimizer.ir._ops import remap_operand_refs
 from stratum.optimizer._optimize import OptConfig
-from stratum.optimizer.ir._dataframe_ops import SelectionKind, SelectionOp
+from stratum.optimizer.ir._dataframe_ops import (
+    ColumnProjectionOp, SelectionKind, SelectionOp)
 from stratum.optimizer.ir._ops import BinOp, GetItemOp, UnaryOp, Op, OperandRef, OutputType
 from stratum.optimizer.ir._column_expr import Col, Const, BinOpExpr, UnaryOpExpr, OperandLeaf, StrExpr
 from stratum.optimizer.physical._source_execs import rechunk_pl_frame
@@ -296,7 +297,9 @@ class TestMaskFolding(unittest.TestCase):
                       BinOpExpr(operator.lt, OperandLeaf(OperandRef(1)), Const(4))),
             sel.predicate)
         self.assertEqual(2, len(sel.inputs))  # [src, shared column]
-        self.assertTrue(any(isinstance(o, GetItemOp) for o in ops))  # column kept
+        # The shared column df["x"] has an external consumer (the assign), so it
+        # survives as a standalone column op -- now a ColumnProjectionOp.
+        self.assertTrue(any(isinstance(o, ColumnProjectionOp) for o in ops))  # column kept
 
 
 class TestColumnExprOperandRefs(unittest.TestCase):

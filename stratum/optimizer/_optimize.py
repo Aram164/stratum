@@ -194,7 +194,8 @@ def extract_frame_operators(root):
     """ Rewrite the dataframe ops in the dag to the new dataframe ops."""
     start = start_time()
     for op in topological_iterator(root):
-        root, _ = extract_dataframe_op(op, root, FLAGS.make_selection_op, FLAGS.make_map_op)
+        root, _ = extract_dataframe_op(op, root, FLAGS.make_selection_op,
+                                       FLAGS.make_map_op, FLAGS.make_column_projection)
     log_time("dataframe_rewrite took", start)
     _debug_show_graph(root, "frame_rewrite")
     return root

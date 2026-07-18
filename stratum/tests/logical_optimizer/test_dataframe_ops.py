@@ -18,6 +18,8 @@ from stratum._config import FLAGS
 from stratum.optimizer._optimize import OptConfig, optimize as optimize_
 from stratum.optimizer.ir._dataframe_ops import ConcatOp
 from stratum.optimizer.ir._ops import OperandRef, OutputType, Op
+from stratum.optimizer.physical._impl_selection import bind_op
+from stratum.optimizer.physical._plan_context import PlanContext
 
 
 def optimize(dag, conf=None, env=None):
@@ -37,8 +39,17 @@ def _inputs_for(op):
 
 
 def run_op(op, *values, mode="fit_transform"):
-    """Wire `values` as op.inputs (wrapped via `_inp`) and run `op.process`."""
+    """Wire `values` as op.inputs, bind the op's physical impl per the current
+    flags, and run its ``process``.
+
+    Binding mirrors what the optimizer's selection pass does: a migrated op
+    (e.g. ``ConcatOp``) is swapped to its backend-specific physical impl chosen
+    from ``FLAGS``; an un-migrated op keeps its own ``process``. This lets the
+    same ``run_op(SomeOp(...), df)`` tests exercise the physical impls without
+    each test having to construct the concrete class itself.
+    """
     op.inputs = [_inp(v) for v in values]
+    bind_op(op, PlanContext.from_flags())
     return op.process(mode, _inputs_for(op))
 
 

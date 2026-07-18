@@ -9,6 +9,7 @@ from stratum.optimizer.ir._dataframe_ops import (
     ApplyUDFOp,
     AssignMapOp,
     AssignOp,
+    ColumnProjectionOp,
     ColumnSelectorOp,
     ConcatOp,
     DatetimeConversionOp,
@@ -105,6 +106,7 @@ CURRENT_LOGICAL_OPERATOR_TYPES: tuple[type[Op], ...] = (
     BinOp,
     CallOp,
     ChoiceOp,
+    ColumnProjectionOp,
     ColumnSelectorOp,
     ConcatOp,
     DatetimeConversionOp,
@@ -348,6 +350,13 @@ def build_default_physical_registry() -> PhysicalRegistry:
     # (including the Rust kernels, now class-based @rust_impl impls).
     from stratum.optimizer.physical._source_execs import SOURCES_FAMILY  # noqa: F401
     from stratum.optimizer.physical import _transform_execs  # noqa: F401
+    from stratum.optimizer.physical import _concat_execs  # noqa: F401
+    from stratum.optimizer.physical import _join_execs  # noqa: F401
+    from stratum.optimizer.physical import _aggregation_execs  # noqa: F401
+    from stratum.optimizer.physical import _projection_execs  # noqa: F401
+    from stratum.optimizer.physical import _selection_execs  # noqa: F401
+    from stratum.optimizer.physical import _map_execs  # noqa: F401
+    from stratum.optimizer.physical import _getitem_execs  # noqa: F401
 
     registry.register_family(SOURCES_FAMILY)
     for impl in _DECORATED_IMPLS:

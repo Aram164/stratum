@@ -40,6 +40,7 @@ class _Flags:
     validate_dag: bool = True
     make_selection_op: bool = True
     make_map_op: bool = True
+    make_column_projection: bool = True
     rechunk: bool = True
     buffer_pool_memory_budget: int = 0
 
@@ -63,6 +64,7 @@ def set_config(rust_backend: bool | None = None,
     validate_dag: bool = True,
     make_selection_op: bool = True,
     make_map_op: bool = True,
+    make_column_projection: bool = True,
     rechunk: bool = True,
 buffer_pool_memory_budget: int = 0
                ) -> None:
@@ -149,6 +151,7 @@ buffer_pool_memory_budget: int = 0
     FLAGS.explain_linear_plan = bool(explain_linear_plan)
     FLAGS.make_selection_op = bool(make_selection_op)
     FLAGS.make_map_op = bool(make_map_op)
+    FLAGS.make_column_projection = bool(make_column_projection)
     FLAGS.rechunk = bool(rechunk)
 
     #FIXME: This should be the default. No need to set it. Remove.

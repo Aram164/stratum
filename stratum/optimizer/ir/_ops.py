@@ -1,5 +1,4 @@
 from __future__ import annotations
-from stratum._config import FLAGS
 from types import SimpleNamespace
 from typing import Callable
 
@@ -497,14 +496,7 @@ class GetItemOp(Op):
         if name is None:
             name = str(key)
         super().__init__(name=name)
-
-
-    def process(self, mode: str, inputs: list):
-        # The container being indexed is the implicit primary operand (index 0).
-        key = inputs[self.key.k] if isinstance(self.key, OperandRef) else self.key
-        if self.is_filter and FLAGS.force_polars:
-            return inputs[0].filter(key)
-        return inputs[0][key]
+    # Execution lives in the physical impls (physical/_getitem_execs.py).
 
 class BinOp(Op):
     fields = ["op", "left", "right"]

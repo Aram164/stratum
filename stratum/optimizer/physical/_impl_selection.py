@@ -80,6 +80,37 @@ class FlagBasedSelector(ImplementationSelector):
         return None
 
 
+def bind_op(op: IRNode, ctx: PlanContext,
+            registry: PhysicalRegistry | None = None,
+            selector: ImplementationSelector | None = None) -> IRNode:
+    """Resolve a single op to a concrete implementation and bind it in place.
+
+    Looks up the registry candidates for the op's type, filters by
+    ``supports(op)``, lets the selector choose, and binds the choice by
+    swapping ``op.__class__`` to the impl's concrete class (identity preserved;
+    a logical op that is a pure backend refinement becomes its physical subclass)
+    and running its ``on_impl_selected(ctx)``.
+
+    Ops with no candidate are left untouched (un-migrated families / structural
+    ops run their own ``process``). Returns ``op``.
+    """
+    if registry is None:
+        registry = get_default_physical_registry()
+    if selector is None:
+        selector = FlagBasedSelector()
+
+    candidates = [c for c in registry.candidates_for(type(op)) if c.supports(op)]
+    impl = selector.choose(op, candidates, ctx)
+    if impl is None:
+        return op
+    logger.debug(f"Selected {impl.backend_name} implementation for {op}")
+    if impl.impl_class is not None and impl.impl_class is not type(op):
+        op.__class__ = impl.impl_class
+    if isinstance(op, PhysicalOp):
+        op.on_impl_selected(ctx)
+    return op
+
+
 def select_implementations(root: IRNode, ctx: PlanContext,
                            registry: PhysicalRegistry | None = None,
                            selector: ImplementationSelector | None = None) -> IRNode:
@@ -96,15 +127,7 @@ def select_implementations(root: IRNode, ctx: PlanContext,
         selector = FlagBasedSelector()
 
     for op in topological_iterator(root):
-        candidates = [c for c in registry.candidates_for(type(op)) if c.supports(op)]
-        impl = selector.choose(op, candidates, ctx)
-        if impl is None:
-            continue
-        logger.debug(f"Selected {impl.backend_name} implementation for {op}")
-        if impl.impl_class is not None and impl.impl_class is not type(op):
-            op.__class__ = impl.impl_class
-        if isinstance(op, PhysicalOp):
-            op.on_impl_selected(ctx)
+        bind_op(op, ctx, registry=registry, selector=selector)
     log_time("implementation selection took", start)
     _assert_no_abstract_ops(root, ctx)
     return root
