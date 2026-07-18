@@ -50,8 +50,14 @@ class PhysicalOp(IRNode):
     # --- Selector-facing API (mirrors PhysicalImpl's fields) -----------------
 
     @classmethod
-    def supports(cls, op: IRNode) -> bool:
-        """Whether this implementation can run ``op`` as configured."""
+    def supports(cls, op: IRNode, ctx) -> bool:
+        """Whether this implementation can run ``op`` under plan context ``ctx``.
+
+        Feasibility may depend both on the op's configuration and on plan-time
+        policy carried by ``ctx`` (e.g. a fast path enabled by a flag). This is
+        how two impls of the *same* backend stay mutually exclusive candidates
+        instead of leaking the decision into a runtime branch.
+        """
         return True
 
     @classmethod

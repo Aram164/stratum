@@ -32,7 +32,7 @@ def _ctx(backend="pandas", rust=False):
                        parallelism=1, rust_backend=rust, allow_patch=True)
 
 
-def _impl(op_type, backend, supports=lambda op: True, impl_class=None):
+def _impl(op_type, backend, supports=lambda op, ctx: True, impl_class=None):
     return PhysicalImpl(op_type=op_type, backend_name=backend,
                         input_format="frame", output_format="frame",
                         supports=supports, cost=_placeholder_cost,
@@ -94,7 +94,7 @@ class TestPlanTimeBinding(unittest.TestCase):
                 raise AssertionError("unsupported impl must not be bound")
 
         registry = PhysicalRegistry()
-        registry.register(_impl(DummyOp, "pandas", supports=lambda op: False,
+        registry.register(_impl(DummyOp, "pandas", supports=lambda op, ctx: False,
                                 impl_class=FailDummyOp))
         op = DummyOp()
         select_implementations(op, _ctx(), registry=registry)  # no-op, no error

@@ -4,7 +4,7 @@ Lowering fixes the *shape* of the physical plan; this pass fixes the *impl* of
 each op: which concrete backend-specific implementation actually runs. For every
 op in the DAG it asks the :class:`~stratum.optimizer.physical._registry.PhysicalRegistry`
 for the candidate :class:`PhysicalImpl` entries registered under the op's type,
-filters them through each candidate's ``supports(op)`` check, and lets an
+filters them through each candidate's ``supports(op, ctx)`` check, and lets an
 :class:`ImplementationSelector` choose one. The choice is then *bound* into the
 op at plan time: the op is swapped to the impl's concrete
 :class:`~stratum.optimizer.physical._physical_ops.PhysicalOp` class in place
@@ -86,7 +86,7 @@ def bind_op(op: IRNode, ctx: PlanContext,
     """Resolve a single op to a concrete implementation and bind it in place.
 
     Looks up the registry candidates for the op's type, filters by
-    ``supports(op)``, lets the selector choose, and binds the choice by
+    ``supports(op, ctx)``, lets the selector choose, and binds the choice by
     swapping ``op.__class__`` to the impl's concrete class (identity preserved;
     a logical op that is a pure backend refinement becomes its physical subclass)
     and running its ``on_impl_selected(ctx)``.
@@ -99,7 +99,7 @@ def bind_op(op: IRNode, ctx: PlanContext,
     if selector is None:
         selector = FlagBasedSelector()
 
-    candidates = [c for c in registry.candidates_for(type(op)) if c.supports(op)]
+    candidates = [c for c in registry.candidates_for(type(op)) if c.supports(op, ctx)]
     impl = selector.choose(op, candidates, ctx)
     if impl is None:
         return op

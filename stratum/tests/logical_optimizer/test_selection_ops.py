@@ -403,6 +403,43 @@ class TestPandasQuery(unittest.TestCase):
         self.assertEqual([2, 3], result["x"].tolist())
 
 
+class TestPandasQueryImplSelection(unittest.TestCase):
+    """The query-vs-index choice is a plan-time bind, not a runtime branch."""
+
+    def _bind(self, op):
+        from stratum.optimizer.physical._impl_selection import bind_op
+        from stratum.optimizer.physical._plan_context import PlanContext
+        op.inputs = [Op()]
+        return bind_op(op, PlanContext.from_flags())
+
+    def test_expressible_mask_binds_query_impl_under_flag(self):
+        from stratum.optimizer.physical._selection_execs import PandasQuerySelectionOp
+        op = SelectionOp(kind=SelectionKind.MASK,
+                         predicate=BinOpExpr(operator.gt, Col("x"), Const(1)))
+        with pandas_query():
+            self.assertIsInstance(self._bind(op), PandasQuerySelectionOp)
+
+    def test_expressible_mask_binds_index_impl_without_flag(self):
+        from stratum.optimizer.physical._selection_execs import PandasIndexSelectionOp
+        op = SelectionOp(kind=SelectionKind.MASK,
+                         predicate=BinOpExpr(operator.gt, Col("x"), Const(1)))
+        self.assertIsInstance(self._bind(op), PandasIndexSelectionOp)
+
+    def test_non_expressible_mask_binds_index_impl_even_under_flag(self):
+        from stratum.optimizer.physical._selection_execs import PandasIndexSelectionOp
+        op = SelectionOp(kind=SelectionKind.MASK,
+                         predicate=BinOpExpr(operator.gt, Col("x"),
+                                             OperandLeaf(OperandRef(1))))
+        with pandas_query():
+            self.assertIsInstance(self._bind(op), PandasIndexSelectionOp)
+
+    def test_method_kind_binds_index_impl_under_flag(self):
+        from stratum.optimizer.physical._selection_execs import PandasIndexSelectionOp
+        op = SelectionOp(kind=SelectionKind.HEAD, args=(2,))
+        with pandas_query():
+            self.assertIsInstance(self._bind(op), PandasIndexSelectionOp)
+
+
 class TestColumnExprQueryStrings(unittest.TestCase):
     """to_pandas_query builds a query string, binding literals into params."""
 

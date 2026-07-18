@@ -169,6 +169,45 @@ def test_transformer_binds_selected_backend(polars):
     assert rust_est._stratum_force_rust
 
 
+def test_selection_binds_query_impl_under_flag():
+    """The *same* logical MASK ``SelectionOp`` binds to different pandas impls
+    depending on the plan context: boolean-mask indexing by default, the
+    ``DataFrame.query()`` fast path when ``pandas_query`` is on. The choice is a
+    plan-time bind, so no ``pandas_query`` branch survives into execution.
+
+    Pandas-only: the flag has no effect on the polars backend, so this test does
+    not use the ``polars`` fixture."""
+    from stratum.optimizer.physical._selection_execs import (
+        PandasIndexSelectionOp, PandasQuerySelectionOp)
+
+    def selection_impl(pandas_query):
+        with csv_file(make_orders()) as path, st.config(pandas_query=pandas_query):
+            ops = _optimize(build_pipeline(path))
+        sels = [o for o in ops if isinstance(o, SelectionOp)]
+        assert len(sels) == 1
+        # The predicate (`status == "completed" & quantity > 0`) is fully
+        # query-expressible, so the flag alone decides which impl binds.
+        assert sels[0].kind is SelectionKind.MASK
+        return sels[0]
+
+    # Default: boolean-mask indexing.
+    assert isinstance(selection_impl(pandas_query=False), PandasIndexSelectionOp)
+    # pandas_query on: the query() fast path is bound in at plan time.
+    assert isinstance(selection_impl(pandas_query=True), PandasQuerySelectionOp)
+
+
+def test_query_selection_trains_end_to_end():
+    """With ``pandas_query`` on, the query fast path runs through the scheduler
+    and the pipeline still trains and scores end-to-end (pandas backend)."""
+    scorer = make_scorer(r2_score)
+    with csv_file(make_orders()) as path:
+        preds = build_pipeline(path)
+        with st.config(scheduler=True, rust_backend=False, pandas_query=True, debug_graph=True, DEBUG=True, explain_linear_plan=True):
+            search = preds.skb.make_grid_search(fitted=True, cv=2, scoring=scorer)
+            assert search.results_ is not None
+            assert len(search.results_) > 0
+
+
 def test_frame_ops_pipeline_grid_search(polars):
     """The compiled plan trains and scores end-to-end through Stratum's
     scheduler, driven by ``make_grid_search`` -- the same entry point the other

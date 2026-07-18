@@ -65,7 +65,7 @@ class PhysicalImpl:
     backend_name: BackendName
     input_format: str
     output_format: str
-    supports: Callable[[IRNode], bool]
+    supports: Callable[[IRNode, Any], bool]
     cost: Callable[[IRNode, Any], float]
     exec_mem: Callable[[IRNode, Any], int]
     execute: Callable[[IRNode, str, list[Any]], Any]
@@ -153,7 +153,7 @@ CURRENT_OPERATOR_FAMILIES: tuple[OperatorFamily, ...] = (
 )
 
 
-def _unsupported_supports(op: Op) -> bool:
+def _unsupported_supports(op: Op, ctx: Any) -> bool:
     return False
 
 
@@ -331,7 +331,7 @@ def _register_current_estimator_impls(registry: PhysicalRegistry) -> None:
                 backend_name="sklearn-skrub",
                 input_format="frame",
                 output_format="frame",
-                supports=lambda op: True,
+                supports=lambda op, ctx: True,
                 cost=_placeholder_cost,
                 exec_mem=_placeholder_exec_mem,
                 execute=_current_process_execute,

@@ -56,8 +56,10 @@ class SelectionOp(Op):
         # stays a series); extraction overrides this with the propagated type.
         self.output_type = OutputType.FRAME
 
-    def __str__(self):
-        return f"SelectionOp({self.kind.name.lower()})"
+    # No custom __str__: the base IRNode renders ``<class>(<name>) [df]`` from
+    # ``self.name`` (== the kind), so the plan display reflects the concrete
+    # physical impl the op was bound to (PandasQuerySelectionOp, ...) instead of
+    # a hardcoded "SelectionOp".
 
 
 def make_selection_op(op: MethodCallOp) -> SelectionOp:

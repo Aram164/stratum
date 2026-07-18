@@ -26,7 +26,7 @@ class RustStringEncoder(TransformerOp, PhysicalOp):
     plan time, so ``process`` runs the Rust kernel with no run-time decision left."""
 
     @classmethod
-    def supports(cls, op: TransformerOp) -> bool:
+    def supports(cls, op: TransformerOp, ctx: Any) -> bool:
         supported, _ = supports_rust_string_encoder(op.original_estimator)
         return supported
 
@@ -50,7 +50,7 @@ class RustOneHotEncoder(TransformerOp, PhysicalOp):
     """Native Rust one-hot encoder: swaps in ``RustyOneHotEncoder`` at plan time."""
 
     @classmethod
-    def supports(cls, op: TransformerOp) -> bool:
+    def supports(cls, op: TransformerOp, ctx: Any) -> bool:
         supported, _ = supports_rust_one_hot_encoder(op.original_estimator)
         return supported
 
