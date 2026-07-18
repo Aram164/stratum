@@ -9,7 +9,8 @@ from stratum.optimizer.ir._dataframe_ops import (
     ApplyUDFOp, ColumnProjectionOp, DatetimeConversionOp, GetAttrProjectionOp)
 from stratum.optimizer.ir._ops import GetItemOp, OutputType, BinOp
 from stratum.optimizer.physical._source_execs import NumpyLoad
-from stratum.tests.logical_optimizer.test_dataframe_ops import optimize, npy_file
+from stratum.tests._helpers import npy_file
+from stratum.tests.logical_optimizer.test_dataframe_ops import optimize
 
 
 class TestOutputTypeInference(unittest.TestCase):

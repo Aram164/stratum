@@ -7,12 +7,9 @@ The op-specific tests live alongside their module: ``test_source_ops``,
 import the helpers below from here, mirroring how ``_dataframe_ops`` re-exports the
 per-category ops.
 """
-import os
-import tempfile
 import unittest
 from contextlib import contextmanager
 
-import numpy as np
 import polars as pl
 from stratum._config import FLAGS
 from stratum.optimizer._optimize import OptConfig, optimize as optimize_
@@ -73,42 +70,6 @@ def force_polars(enabled=True):
         yield
     finally:
         FLAGS.force_polars = orig
-
-
-@contextmanager
-def csv_file(df, **to_csv_kwargs):
-    """Write `df` to a temp .csv file and yield its path; cleaned up on exit."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w")
-    df.to_csv(tmp, index=False, **to_csv_kwargs)
-    tmp.close()
-    try:
-        yield tmp.name
-    finally:
-        os.remove(tmp.name)
-
-
-@contextmanager
-def npy_file(arr):
-    """Write `arr` to a temp .npy file and yield its path; cleaned up on exit."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".npy", delete=False, mode="wb")
-    np.save(tmp, arr)
-    tmp.close()
-    try:
-        yield tmp.name
-    finally:
-        os.remove(tmp.name)
-
-
-@contextmanager
-def parquet_file(df):
-    """Write `df` to a temp .parquet file and yield its path; cleaned up on exit."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False, mode="wb")
-    df.to_parquet(tmp.name)
-    tmp.close()
-    try:
-        yield tmp.name
-    finally:
-        os.remove(tmp.name)
 
 
 class PolarsTestCase(unittest.TestCase):

@@ -9,8 +9,8 @@ from stratum.optimizer.ir._ops import CallOp, OperandRef, ValueOp
 from stratum.optimizer.physical._source_execs import (
     InMemoryFrame, NumpyLoad, ReadCSV, ReadParquet)
 from stratum.runtime._buffer_pool import BufferPool
-from stratum.tests.logical_optimizer.test_dataframe_ops import (
-    csv_file, npy_file, optimize, parquet_file)
+from stratum.tests._helpers import csv_file, npy_file, parquet_file
+from stratum.tests.logical_optimizer.test_dataframe_ops import optimize
 
 
 class TestDataSourceRewrites(unittest.TestCase):

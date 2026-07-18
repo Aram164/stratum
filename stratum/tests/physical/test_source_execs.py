@@ -24,8 +24,8 @@ from stratum.optimizer.physical._source_execs import (
     PandasReadParquet, PolarsInMemoryFrame, PolarsReadCSV, PolarsReadParquet,
     ReadCSV, ReadParquet, lower_data_source)
 from stratum.runtime._buffer_pool import BufferPool
-from stratum.tests.logical_optimizer.test_dataframe_ops import (
-    csv_file, force_polars, npy_file, parquet_file)
+from stratum.tests._helpers import csv_file, npy_file, parquet_file
+from stratum.tests.logical_optimizer.test_dataframe_ops import force_polars
 
 
 def run_plan(ops, mode="fit_transform"):
