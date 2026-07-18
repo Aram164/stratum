@@ -9,14 +9,15 @@ from stratum.optimizer.physical import (
     PhysicalRegistry,
     build_default_physical_registry,
 )
-from stratum.optimizer.physical._rust_registry import RUST_KERNELS
+from stratum.optimizer.physical._transform_execs import (RustOneHotEncoder,
+                                                        RustStringEncoder)
 
 
 def test_default_registry_has_logical_surface_and_adapter_candidates():
     registry = build_default_physical_registry()
 
     assert not registry.empty()
-    assert registry.logical_op_types()
+    assert registry.op_types()
     assert ConcatOp in CURRENT_LOGICAL_OPERATOR_TYPES
     assert NumericOp in CURRENT_LOGICAL_OPERATOR_TYPES
     assert "rust" in {backend.name for backend in CURRENT_BACKENDS}
@@ -28,13 +29,16 @@ def test_default_registry_has_logical_surface_and_adapter_candidates():
     assert len(registry.candidates_for(EstimatorOp, backend_name="sklearn-skrub")) == 1
 
 
-def test_rust_kernel_registration_list_is_the_source_of_rust_candidates():
+def test_rust_kernels_are_class_based_impls():
+    # Every Rust kernel is a class-based @rust_impl keyed on the logical
+    # TransformerOp; there is no separate Rust registration list.
     registry = build_default_physical_registry()
 
     rust_candidates = registry.candidates_for(TransformerOp, backend_name="rust")
 
-    assert len(rust_candidates) == len(RUST_KERNELS)
-    assert {kernel.name for kernel in RUST_KERNELS} == {"one_hot_encoder", "string_encoder"}
+    assert len(rust_candidates) == 2
+    assert all(candidate.backend_name == "rust" for candidate in rust_candidates)
+    assert {c.impl_class for c in rust_candidates} == {RustStringEncoder, RustOneHotEncoder}
 
 
 def test_registry_registers_and_queries_impls_by_logical_type():
@@ -44,7 +48,7 @@ def test_registry_registers_and_queries_impls_by_logical_type():
         pass
 
     pandas_impl = PhysicalImpl(
-        logical_op_type=DummyOp,
+        op_type=DummyOp,
         backend_name="pandas",
         input_format="frame",
         output_format="frame",
@@ -54,7 +58,7 @@ def test_registry_registers_and_queries_impls_by_logical_type():
         execute=lambda op, mode, inputs: ("concat", mode, len(inputs)),
     )
     rust_impl = PhysicalImpl(
-        logical_op_type=DummyOp,
+        op_type=DummyOp,
         backend_name="rust",
         input_format="frame",
         output_format="frame",
@@ -80,10 +84,10 @@ def test_register_family_tracks_known_logical_types():
 
     family = OperatorFamily(
         name="custom",
-        logical_op_types=(ConcatOp,),
+        op_types=(ConcatOp,),
         default_backends=("pandas",),
     )
     registry.register_family(family)
 
     assert registry.families() == (family,)
-    assert ConcatOp in registry.logical_op_types()
+    assert ConcatOp in registry.op_types()

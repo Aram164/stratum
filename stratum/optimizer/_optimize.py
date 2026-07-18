@@ -11,6 +11,11 @@ from ._explain import explain_linear_plan
 from ._algebraic_rewrites import algebraic_rewrites, AlgebraicRewritesConfig
 from ._linearization import linearize_dag
 from ._input_removal_planning import compute_pinned_ops, plan_input_removals
+from .physical._plan_context import PlanContext
+from .physical._lowering import lower_to_physical
+from .physical._impl_selection import select_implementations
+# Importing the physical exec modules registers their lowering rules.
+from .physical import _source_execs  # noqa: F401
 from stratum.utils._skrub_graph import build_graph
 import logging
 from stratum._config import FLAGS
@@ -78,8 +83,18 @@ def _debug_validate_dag(root: Op):
         validate_dag(root)
 
 def optimize(dag_root: DataOp, config: OptConfig = None, env: dict = None):
-    """ Entry point for the logical optimizer. Takes a Skrub DataOp DAG, applies logical optimizations,
-    and returns an Op root node.
+    """Entry point for the optimizer. Runs the three planning phases and returns
+    the linearized physical plan ``(linearized_dag, split_pos, flagged_ops)``.
+
+    The phases are:
+
+    1. :func:`logical_optimize` -- convert the Skrub DataOp DAG to the logical
+       IR and run all backend-agnostic rewrites (extraction, CSE, choice
+       unrolling, algebraic rewrites).
+    2. :func:`~stratum.optimizer.physical._lowering.lower_to_physical` -- lower
+       logical ops to physical ops (one logical op may become several).
+    3. :func:`physical_optimize` -- select a concrete implementation per
+       physical op, then linearize and plan buffer removals as the final step.
 
     ``env`` (variable name -> value), when supplied, lets the converter resolve
     variables to compile-time constants (ValueOps) instead of VariableOps."""
@@ -87,7 +102,29 @@ def optimize(dag_root: DataOp, config: OptConfig = None, env: dict = None):
     if config is None:
         config = OptConfig()
 
+    # Phase 1: logical optimization (backend-agnostic).
+    root = logical_optimize(dag_root, config, env)
 
+    # Phases 2 & 3 read the config that drives operator selection once, here, so
+    # execution carries no operator-selection control flow.
+    ctx = PlanContext.from_flags()
+
+    # Phase 2: lower logical ops to physical ops.
+    root = lower_to_physical(root, ctx)
+    _debug_validate_dag(root)  # operand refs after lowering
+    _debug_show_graph(root, "lowered")
+
+    # Phase 3: physical optimization (implementation selection + linearization).
+    result = physical_optimize(root, ctx)
+
+    log_time("Optimization took in total", start)
+    return result
+
+
+def logical_optimize(dag_root: DataOp, config: OptConfig, env: dict = None) -> Op:
+    """Phase 1: build the logical IR and run all backend-agnostic rewrites.
+
+    Returns the logical DAG root, ready to be lowered to physical ops."""
     # Convert to Op DAG
     root = convert_to_ops(dag_root, env)
 
@@ -112,20 +149,34 @@ def optimize(dag_root: DataOp, config: OptConfig = None, env: dict = None):
     if config.unroll_choices:
         root = choice_unrolling(root)
 
-    # Final optimized DAG
+    # Final logical DAG
     if config.algebraic_rewrites:
         root = algebraic_rewrites(root, config.algebraic_rewrite_config)
         _debug_show_graph(root, "algebraic_rewrite")
 
-    # Final passes: linearization and buffer removal planning
-    _debug_validate_dag(root)  # operand refs after all rewrites, before linearization
+    _debug_validate_dag(root)  # operand refs after all logical rewrites, before lowering
+    return root
+
+
+def physical_optimize(root: Op, ctx: PlanContext, registry=None):
+    """Phase 3: select concrete implementations, then linearize and plan removals.
+
+    Implementation selection resolves each op with registered candidates to a
+    concrete implementation (consulting the default PhysicalRegistry unless one
+    is injected). Linearization and buffer-removal planning run last, as the
+    final step of the whole pipeline."""
+
+    # add physical rewrites here (or afterwards)
+    root = select_implementations(root, ctx, registry=registry)
+    _debug_validate_dag(root)
+    _debug_show_graph(root, "physical")
+    # similarly we can do the things like parallelization planning here
+
     linearized_dag, split_pos, flagged_ops = linearize_dag(root)
     pinned_ops = compute_pinned_ops(linearized_dag, split_pos, flagged_ops)
     plan_input_removals(linearized_dag, pinned_ops)
 
     _debug_explain_linear_plan("explain_linear_plan", linearized_dag, split_pos)
-
-    log_time("Optimization took in total", start)
     return linearized_dag, split_pos, flagged_ops
 
 

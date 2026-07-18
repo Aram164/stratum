@@ -50,7 +50,8 @@ class TestOpCloning(unittest.TestCase):
         with st.config(fast_dataops_convert=True):
             ops, *_ = optimize_(choice.empty)
 
-        with self.assertRaises(ValueError):
+        # ops[0] is the physical source op; physical ops are never cloned.
+        with self.assertRaises(TypeError):
             ops[0].clone()
 
         cloned = ops[1].clone()

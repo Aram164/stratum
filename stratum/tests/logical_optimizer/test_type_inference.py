@@ -6,8 +6,9 @@ import pandas as pd
 import stratum as st
 from stratum.optimizer._optimize import OptConfig
 from stratum.optimizer.ir._dataframe_ops import (
-    ApplyUDFOp, DataSourceOp, DatetimeConversionOp, GetAttrProjectionOp)
+    ApplyUDFOp, DatetimeConversionOp, GetAttrProjectionOp)
 from stratum.optimizer.ir._ops import GetItemOp, OutputType, BinOp
+from stratum.optimizer.physical._source_execs import NumpyLoad
 from stratum.tests.logical_optimizer.test_dataframe_ops import optimize, npy_file
 
 
@@ -50,10 +51,11 @@ class TestOutputTypeInference(unittest.TestCase):
         self.assertIs(OutputType.SERIES, binops[0].output_type)
 
     def test_npy_source_is_matrix(self):
+        # An npy read lowers to the physical NumpyLoad source, which is a MATRIX.
         with npy_file(np.array([1, 2, 3])) as path:
             data = st.as_data_op(path).skb.apply_func(np.load)
             ops = optimize(data, OptConfig(dataframe_ops=True))
-        sources = [o for o in ops if isinstance(o, DataSourceOp)]
+        sources = [o for o in ops if isinstance(o, NumpyLoad)]
         self.assertEqual(1, len(sources))
         self.assertIs(OutputType.MATRIX, sources[0].output_type)
 

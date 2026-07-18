@@ -13,7 +13,7 @@ from stratum.optimizer._optimize import OptConfig
 from stratum.optimizer.ir._dataframe_ops import SelectionKind, SelectionOp
 from stratum.optimizer.ir._ops import BinOp, GetItemOp, UnaryOp, Op, OperandRef, OutputType
 from stratum.optimizer.ir._column_expr import Col, Const, BinOpExpr, UnaryOpExpr, OperandLeaf, StrExpr
-from stratum.optimizer.ir._source_ops import rechunk_pl_frame
+from stratum.optimizer.physical._source_execs import rechunk_pl_frame
 from stratum.tests.logical_optimizer.test_dataframe_ops import (
     optimize, run_op, force_polars)
 
