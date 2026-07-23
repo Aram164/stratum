@@ -8,13 +8,16 @@ import polars as pl
 
 import stratum as st
 from stratum.optimizer._optimize import OptConfig
-from stratum.optimizer.ir._map_ops import AssignMapOp
+from stratum.optimizer.ir._map_ops import (
+    AssignMapOp, MissingMaskOp, make_missing_mask_op)
 from stratum.optimizer.ir._projection_ops import (
     AssignOp, DatetimeConversionOp, GetAttrProjectionOp)
+from stratum.optimizer.ir._selection_ops import SelectionOp
 from stratum.optimizer.ir._column_expr import (
-    BinOpExpr, Col, Const, DatetimeExpr, DtExpr, OperandLeaf, StrExpr, _Folder)
+    BinOpExpr, Col, Const, DatetimeExpr, DtExpr, EvalContext, MissingMaskExpr,
+    OperandLeaf, StrExpr, _Folder)
 from stratum.optimizer.ir._ops import (
-    BinOp, GetItemOp, Op, OperandRef, UnaryOp)
+    BinOp, CallOp, GetItemOp, Op, OperandRef, OutputType, UnaryOp)
 from stratum.tests.logical_optimizer.test_dataframe_ops import (
     optimize, run_op, force_polars, make_map_op)
 
@@ -132,6 +135,245 @@ class TestAssignMapFolding(unittest.TestCase):
         map_op = _one(self, ops, AssignMapOp)
         self.assertIsInstance(map_op.entries["parsed"], OperandLeaf)
         _one(self, ops, DatetimeConversionOp)
+
+
+class TestMissingMaskOp(unittest.TestCase):
+    def setUp(self):
+        self.df = pd.DataFrame({"a": [1.0, np.nan]})
+
+    def test_bound_method_extracts(self):
+        src = st.as_data_op(self.df)
+        ops = optimize(src["a"].isna(), OptConfig(dataframe_ops=True))
+        mask_op = _one(self, ops, MissingMaskOp)
+        self.assertTrue(mask_op.positive)
+        self.assertEqual(OutputType.SERIES, mask_op.output_type)
+
+    def test_standalone_function_extracts(self):
+        src = st.as_data_op(self.df)
+        out = src["a"].skb.apply_func(pd.notna)
+        mask_op = _one(
+            self, optimize(out, OptConfig(dataframe_ops=True)), MissingMaskOp)
+        self.assertFalse(mask_op.positive)
+
+    def test_standalone_function_accepts_obj_keyword(self):
+        src = Op()
+        src.output_type = OutputType.FRAME
+        call = CallOp(func=pd.isna, args=(), kwargs={"obj": OperandRef(0)})
+        call.inputs = [src]
+        src.outputs = [call]
+
+        mask_op = make_missing_mask_op(call)
+
+        self.assertIsInstance(mask_op, MissingMaskOp)
+        self.assertTrue(mask_op.positive)
+        self.assertEqual([src], mask_op.inputs)
+
+    def test_missing_mask_folds_into_assign(self):
+        src = st.as_data_op(self.df)
+        out = src.assign(missing=src["a"].isnull())
+        ops = optimize(out, OptConfig(dataframe_ops=True))
+        map_op = _one(self, ops, AssignMapOp)
+        self.assertEqual(
+            MissingMaskExpr(Col("a"), "isnull"), map_op.entries["missing"])
+        self.assertEqual([], [op for op in ops if isinstance(op, MissingMaskOp)])
+
+    def test_missing_mask_folds_into_selection(self):
+        src = st.as_data_op(self.df)
+        ops = optimize(src[src["a"].isna()], OptConfig(dataframe_ops=True))
+        selection = _one(self, ops, SelectionOp)
+        self.assertEqual(
+            MissingMaskExpr(Col("a"), "isnull"), selection.predicate)
+        self.assertEqual([], [op for op in ops if isinstance(op, MissingMaskOp)])
+
+    def test_standalone_execution(self):
+        result = run_op(MissingMaskOp(True), self.df["a"])
+        self.assertEqual([False, True], result.tolist())
+
+    def test_series_execution_polars(self):
+        series = pl.Series("a", [1.0, None, 3.0])
+
+        # A standalone mask is executed by the physical MissingMaskOp.
+        with force_polars():
+            positive_result = run_op(MissingMaskOp(True), series)
+            negative_result = run_op(MissingMaskOp(False), series)
+
+        self.assertEqual(
+            [False, True, False], positive_result.to_list())
+        self.assertEqual(
+            [True, False, True], negative_result.to_list())
+
+    def test_dataframe_execution_polars(self):
+        frame = pl.DataFrame({
+            "a": [1.0, None],
+            "b": [None, "value"],
+        })
+
+        # DataFrame masks apply the predicate to every column.
+        with force_polars():
+            positive_result = run_op(MissingMaskOp(True), frame)
+            negative_result = run_op(MissingMaskOp(False), frame)
+
+        positive_expected = {
+            "a": [False, True],
+            "b": [True, False],
+        }
+        negative_expected = {
+            "a": [True, False],
+            "b": [False, True],
+        }
+        self.assertEqual(
+            positive_expected, positive_result.to_dict(as_series=False))
+        self.assertEqual(
+            negative_expected, negative_result.to_dict(as_series=False))
+
+
+class TestMissingMaskExpr(unittest.TestCase):
+    def setUp(self):
+        self.pandas_series_frame = pd.DataFrame({
+            "a": [1.0, None, 3.0],
+        })
+        self.polars_series_frame = pl.DataFrame({
+            "a": [1.0, None, 3.0],
+        })
+        self.pandas_frame = pd.DataFrame({
+            "a": [1.0, None],
+            "b": [None, "value"],
+        })
+        self.polars_frame = pl.DataFrame({
+            "a": [1.0, None],
+            "b": [None, "value"],
+        })
+
+    def test_aliases(self):
+        isna_expression = MissingMaskExpr(Col("a"), "isna")
+        isnull_expression = MissingMaskExpr(Col("a"), "isnull")
+        notna_expression = MissingMaskExpr(Col("a"), "notna")
+        notnull_expression = MissingMaskExpr(Col("a"), "notnull")
+
+        self.assertTrue(isna_expression.positive)
+        self.assertTrue(isnull_expression.positive)
+        self.assertFalse(notna_expression.positive)
+        self.assertFalse(notnull_expression.positive)
+
+    def test_invalid_method_raises(self):
+        with self.assertRaises(ValueError):
+            MissingMaskExpr(Col("a"), "missing")
+
+    def test_equality_and_hash(self):
+        first = MissingMaskExpr(Col("a"), "isnull")
+        second = MissingMaskExpr(Col("a"), "isnull")
+        different_method = MissingMaskExpr(Col("a"), "notnull")
+        different_operand = MissingMaskExpr(Col("b"), "isnull")
+
+        self.assertEqual(first, second)
+        self.assertEqual(hash(first), hash(second))
+        self.assertNotEqual(first, different_method)
+        self.assertNotEqual(first, different_operand)
+
+    def test_repr_contains_method_and_operand(self):
+        expression = MissingMaskExpr(Col("a"), "isnull")
+
+        self.assertEqual("isnull(Col('a'))", repr(expression))
+
+    def test_iter_operand_refs(self):
+        leaf = OperandLeaf(OperandRef(2))
+        expression = MissingMaskExpr(leaf, "isnull")
+
+        refs = list(expression.iter_operand_refs())
+
+        self.assertEqual([2], [ref.k for ref in refs])
+
+    def test_remap_operand_refs(self):
+        leaf = OperandLeaf(OperandRef(2))
+        expression = MissingMaskExpr(leaf, "notnull")
+
+        remapped = expression.remap_operand_refs({2: 1})
+
+        expected = MissingMaskExpr(OperandLeaf(OperandRef(1)), "notnull")
+        self.assertEqual(expected, remapped)
+        self.assertEqual([2], [ref.k for ref in expression.iter_operand_refs()])
+
+    def test_series_execution_pandas(self):
+        positive_expression = MissingMaskExpr(Col("a"), "isnull")
+        negative_expression = MissingMaskExpr(Col("a"), "notnull")
+        context = EvalContext(
+            frame=self.pandas_series_frame,
+            inputs=[self.pandas_series_frame],
+        )
+
+        positive_result = positive_expression.to_pandas(context)
+        negative_result = negative_expression.to_pandas(context)
+
+        self.assertEqual([False, True, False], positive_result.tolist())
+        self.assertEqual([True, False, True], negative_result.tolist())
+
+    def test_series_execution_polars(self):
+        positive_expression = MissingMaskExpr(Col("a"), "isnull")
+        negative_expression = MissingMaskExpr(Col("a"), "notnull")
+        context = EvalContext(
+            frame=self.polars_series_frame,
+            inputs=[self.polars_series_frame],
+        )
+
+        positive_result_expression = positive_expression.to_polars(context)
+        negative_result_expression = negative_expression.to_polars(context)
+        result = self.polars_series_frame.select(
+            positive_result_expression.alias("positive"),
+            negative_result_expression.alias("negative"),
+        )
+
+        self.assertEqual([False, True, False], result["positive"].to_list())
+        self.assertEqual([True, False, True], result["negative"].to_list())
+
+    def test_dataframe_execution_pandas(self):
+        leaf = OperandLeaf(OperandRef(0))
+        positive_expression = MissingMaskExpr(leaf, "isnull")
+        negative_expression = MissingMaskExpr(leaf, "notnull")
+        context = EvalContext(
+            frame=self.pandas_frame,
+            inputs=[self.pandas_frame],
+        )
+
+        positive_result = positive_expression.to_pandas(context)
+        negative_result = negative_expression.to_pandas(context)
+        positive_expected = pd.DataFrame({
+            "a": [False, True],
+            "b": [True, False],
+        })
+        negative_expected = pd.DataFrame({
+            "a": [True, False],
+            "b": [False, True],
+        })
+
+        pd.testing.assert_frame_equal(positive_expected, positive_result)
+        pd.testing.assert_frame_equal(negative_expected, negative_result)
+
+    def test_dataframe_execution_polars(self):
+        leaf = OperandLeaf(OperandRef(0))
+        positive_expression = MissingMaskExpr(leaf, "isnull")
+        negative_expression = MissingMaskExpr(leaf, "notnull")
+        context = EvalContext(
+            frame=self.polars_frame,
+            inputs=[self.polars_frame],
+        )
+
+        positive_result_expression = positive_expression.to_polars(context)
+        negative_result_expression = negative_expression.to_polars(context)
+        positive_result = self.polars_frame.select(positive_result_expression)
+        negative_result = self.polars_frame.select(negative_result_expression)
+        positive_expected = {
+            "a": [False, True],
+            "b": [True, False],
+        }
+        negative_expected = {
+            "a": [True, False],
+            "b": [False, True],
+        }
+
+        self.assertEqual(
+            positive_expected, positive_result.to_dict(as_series=False))
+        self.assertEqual(
+            negative_expected, negative_result.to_dict(as_series=False))
 
 
 class TestAssignMapProcess(unittest.TestCase):
@@ -308,6 +550,72 @@ class TestFolderEdgeCases(unittest.TestCase):
 def polars(request):
     with force_polars(request.param):
         yield request.param
+
+
+@pytest.mark.parametrize(
+    "method_name, expected",
+    [
+        ("isna", [False, True, False]),
+        ("isnull", [False, True, False]),
+        ("notna", [True, False, True]),
+        ("notnull", [True, False, True]),
+    ],
+)
+def test_missing_mask_pipeline_evaluates(polars, method_name, expected):
+    df = pd.DataFrame({"a": [1.0, None, 3.0]})
+    src = st.as_data_op(df)
+    column = src["a"]
+    missing_method = getattr(column, method_name)
+    out = src.assign(missing=missing_method())
+
+    ops = optimize(out, OptConfig(dataframe_ops=True))
+    map_op = _one(unittest.TestCase(), ops, AssignMapOp)
+    folded_method = (
+        "isnull" if method_name in ("isna", "isnull") else "notnull")
+    expected_expression = MissingMaskExpr(Col("a"), folded_method)
+    assert expected_expression == map_op.entries["missing"]
+    assert [] == [op for op in ops if isinstance(op, MissingMaskOp)]
+
+    result = st._api.evaluate(out)
+
+    assert expected == list(result["missing"])
+
+
+def test_nested_missing_mask_pipeline_evaluates(polars):
+    df = pd.DataFrame({
+        "a": [2.0, 4.0, 6.0],
+        "b": [1.0, None, 3.0],
+    })
+    src = st.as_data_op(df)
+    ratio = src["a"] / src["b"]
+    out = src.assign(missing=ratio.isnull())
+
+    ops = optimize(out, OptConfig(dataframe_ops=True))
+    map_op = _one(unittest.TestCase(), ops, AssignMapOp)
+    expected_expression = MissingMaskExpr(
+        BinOpExpr(operator.truediv, Col("a"), Col("b")),
+        "isnull",
+    )
+    assert expected_expression == map_op.entries["missing"]
+
+    result = st._api.evaluate(out)
+
+    assert [False, True, False] == list(result["missing"])
+
+
+def test_missing_mask_selection_pipeline_evaluates(polars):
+    df = pd.DataFrame({"a": [1.0, None, 3.0]})
+    src = st.as_data_op(df)
+    out = src[src["a"].notnull()]
+
+    ops = optimize(out, OptConfig(dataframe_ops=True))
+    selection = _one(unittest.TestCase(), ops, SelectionOp)
+    expected_expression = MissingMaskExpr(Col("a"), "notnull")
+    assert expected_expression == selection.predicate
+
+    result = st._api.evaluate(out)
+
+    assert [1.0, 3.0] == list(result["a"])
 
 
 def test_assign_pipeline_evaluates(polars):

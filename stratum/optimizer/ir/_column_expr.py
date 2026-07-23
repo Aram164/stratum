@@ -247,6 +247,45 @@ class UnaryOpExpr(ColumnExpr):
         return UnaryOpExpr(self.op, self.operand.remap_operand_refs(mapping))
 
 
+class MissingMaskExpr(ColumnExpr):
+    """Missing-value-mask predicate applied to a frame-like object expression."""
+
+    __slots__ = ("operand", "method", "positive")
+
+    def __init__(self, operand: ColumnExpr, method: str):
+        self.operand = operand
+        self.method = method
+        if method in ("isnull", "isna"):
+            self.positive = True
+        elif method in ("notnull", "notna"):
+            self.positive = False
+        else:
+            raise ValueError(f"Unsupported missing-value method: {method!r}")
+
+    def _key(self):
+        return (self.operand, self.method)
+
+    def __repr__(self):
+        return f"{self.method}({self.operand!r})"
+
+    def to_pandas(self, ctx):
+        obj = self.operand.to_pandas(ctx)
+        return pd.isnull(obj) if self.positive else pd.notnull(obj)
+
+    def to_polars(self, ctx):
+        obj = self.operand.to_polars(ctx)
+        if isinstance(obj, pl.DataFrame):
+            return pl.all().is_null() if self.positive else pl.all().is_not_null()
+        return obj.is_null() if self.positive else obj.is_not_null()
+
+    def iter_operand_refs(self):
+        yield from self.operand.iter_operand_refs()
+
+    def remap_operand_refs(self, mapping):
+        return MissingMaskExpr(
+            self.operand.remap_operand_refs(mapping), self.method)
+
+
 class StrExpr(ColumnExpr):
     """String accessor call (``.str.<method>()``)."""
     __slots__ = ("operand", "method", "args", "kwargs")
@@ -397,6 +436,9 @@ class _Folder:
 
     def _is_foldable(self, node: Op) -> bool:
         """Return whether ``node`` can be represented as a ``ColumnExpr``."""
+        # Local import avoids a cycle because _map_ops imports this module.
+        from stratum.optimizer.ir._map_ops import MissingMaskOp
+
         if isinstance(node, BinOp):
             return node.op in BINARY_SYMBOLS
         if isinstance(node, UnaryOp):
@@ -419,6 +461,8 @@ class _Folder:
             # Only the fused datetime accessor (.dt.<attr>); .str is already fused
             # into StringMethodOp during frame extraction.
             return len(node.attr_name) == 2 and node.attr_name[0] == "dt"
+        if isinstance(node, MissingMaskOp):
+            return len(node.inputs) == 1
         return False
 
     @staticmethod
@@ -429,6 +473,8 @@ class _Folder:
 
     def _producer_ops(self, node: Op) -> list[Op]:
         """Return foldable operand producers for ``node``."""
+        from stratum.optimizer.ir._map_ops import MissingMaskOp
+
         if isinstance(node, BinOp):
             return [node.inputs[r.k] for r in (node.left, node.right)
                     if isinstance(r, OperandRef)]
@@ -438,6 +484,8 @@ class _Folder:
             return []
         if isinstance(node, (StringMethodOp, DatetimeConversionOp,
                              GetAttrProjectionOp)):
+            return [node.inputs[0]]
+        if isinstance(node, MissingMaskOp):
             return [node.inputs[0]]
         return []
 
@@ -517,6 +565,8 @@ class _Folder:
 
     def _make_expr(self, node: Op, absorbable: set[int],
                    memo: dict[int, ColumnExpr]) -> ColumnExpr:
+        from stratum.optimizer.ir._map_ops import MissingMaskOp
+
         if isinstance(node, BinOp):
             return BinOpExpr(node.op,
                              self._operand(node.left, node, absorbable, memo),
@@ -539,6 +589,10 @@ class _Folder:
         if isinstance(node, GetAttrProjectionOp):
             operand = self._resolve(node.inputs[0], absorbable, memo)
             return DtExpr(operand, node.attr_name[1])
+        if isinstance(node, MissingMaskOp):
+            operand = self._resolve(node.inputs[0], absorbable, memo)
+            method = "isnull" if node.positive else "notnull"
+            return MissingMaskExpr(operand, method)
         raise AssertionError(f"unfoldable node reached _make_expr: {node!r}")
 
     def _operand(self, operand, parent: Op, absorbable: set[int],
