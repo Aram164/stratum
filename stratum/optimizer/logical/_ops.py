@@ -20,7 +20,7 @@ from stratum.optimizer.logical import _schema
 from stratum.optimizer.logical._base import (
     IRNode, OutputType, FRAME_TYPES, is_frame_like, OperandRef,
     _resolve_operand, _resolve_args, _resolve_kwargs, remap_operand_refs,
-    config_key, estimator_key, clone_value,
+    config_key, estimator_key, clone_value, rebuild_dict,
     _ALL_SELECTOR_KEY, _GRAPH_PARAM_KEY,
 )
 import logging
@@ -99,7 +99,7 @@ class OperandBinder:
         if isinstance(value, list):
             return [self.bind(v) for v in value]
         if isinstance(value, dict):
-            return {k: self.bind(v) for k, v in value.items()}
+            return rebuild_dict(value, ((k, self.bind(v)) for k, v in value.items()))
         if isinstance(value, slice):
             return slice(self.bind(value.start), self.bind(value.stop), self.bind(value.step))
         return value
@@ -183,7 +183,7 @@ class ImplOp(Op):
                 new_seq = [replace_dataop(item) for item in value]
                 return type(value)(new_seq)
             elif isinstance(value, dict):
-                return {key: replace_dataop(val) for key, val in value.items()}
+                return rebuild_dict(value, ((key, replace_dataop(val)) for key, val in value.items()))
             else:
                 return value
 
