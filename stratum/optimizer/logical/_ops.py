@@ -1,4 +1,5 @@
 from __future__ import annotations
+import operator
 from numbers import Number
 from types import SimpleNamespace
 from typing import Callable
@@ -706,7 +707,26 @@ class BinOp(Op):
     def process(self, mode: str, inputs: list):
         left = inputs[self.left.k] if isinstance(self.left, OperandRef) else self.left
         right = inputs[self.right.k] if isinstance(self.right, OperandRef) else self.right
-        return self.op(left, right)
+        return apply_binary(self.op, left, right)
+
+
+_COMPARISONS = {operator.lt, operator.le, operator.gt, operator.ge, operator.eq}
+
+
+def apply_binary(op, left, right):
+    """``op(left, right)``, with pandas' result for a missing operand on polars.
+
+    pandas compares a missing value (NaN) as False -- True for ``!=`` -- while
+    polars propagates null, which a materialized mask or a later ``~`` then sees.
+    """
+    result = op(left, right)
+    if isinstance(result, (pl.Series, pl.Expr)):
+        if op in _COMPARISONS:
+            return result.fill_null(False)
+        if op is operator.ne:
+            return result.fill_null(True)
+    return result
+
 
 class UnaryOp(Op):
     fields = ["op", "operand"]
