@@ -7,9 +7,9 @@ from stratum.optimizer._optimize import OptConfig
 from skrub import selectors
 from stratum.optimizer.logical._projection_ops import (
     ColumnProjectionOp, ColumnSelectorOp, DropOp, MetadataOp, ProjectionOp,
-    make_reset_index_op)
+    drop_targets_columns, make_reset_index_op)
 from stratum.optimizer.logical._ops import (
-    GetItemOp, MethodCallOp, OutputType, TransformerOp)
+    GetItemOp, MethodCallOp, OperandRef, OutputType, TransformerOp)
 from .test_dataframe_ops import (
     PolarsTestCase, _inp, _inputs_for, force_polars, optimize, run_op)
 
@@ -251,3 +251,24 @@ class TestColumnSelectorProcess(unittest.TestCase):
         op = ColumnSelectorOp(selector=selectors.numeric())
         op.selected_columns = ["a"]  # even if the original were somehow resolved
         self.assertIsNone(op.clone().selected_columns)
+
+
+class TestDropTargetsColumns(unittest.TestCase):
+    """Which axis a ``drop`` call works on decides its logical family."""
+
+    def test_axis_classification_matches_pandas(self):
+        cases = [
+            ({}, False),
+            ({"axis": 0}, False),
+            ({"axis": "index"}, False),
+            ({"index": [0]}, False),
+            ({"axis": 1}, True),
+            ({"axis": "columns"}, True),
+            ({"columns": ["a"]}, True),
+            ({"columns": ["a"], "axis": 1}, None),     # pandas rejects axis with columns=
+            ({"index": [0], "columns": ["a"]}, None),  # both axes
+            ({"axis": OperandRef(1)}, None),           # graph-fed axis
+        ]
+        for kwargs, expected in cases:
+            with self.subTest(kwargs=kwargs):
+                self.assertIs(expected, drop_targets_columns(kwargs))

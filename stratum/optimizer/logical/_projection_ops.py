@@ -89,12 +89,38 @@ class ProjectionOp(Op):
         self.output_type = OutputType.FRAME
 
 
-class DropOp(ProjectionOp):
-    """``df.drop(...)``.
+def drop_targets_columns(kwargs: dict | None) -> bool | None:
+    """Which axis a ``drop(...)`` call removes labels from: True for columns,
+    False for rows (index labels), None when that isn't statically known.
 
-    Only the column form is a projection. The pandas default (``axis=0``) drops
-    *rows* by index label, which is a selection.
-    TODO: split row drops into a selection-family op at extraction.
+    pandas defaults to ``axis=0``, i.e. dropping *rows* by index label.
+    ``index=`` / ``columns=`` name the axis themselves; naming both drops along
+    both axes, which is neither a projection nor a selection, and pandas rejects
+    either one next to an ``axis``, so those calls are left to raise as written.
+    ``axis`` is keyword-only on ``DataFrame.drop``, so it can never arrive
+    positionally.
+    """
+    kwargs = kwargs or {}
+    by_index = kwargs.get("index") is not None
+    by_columns = kwargs.get("columns") is not None
+    if by_index or by_columns:
+        if (by_index and by_columns) or "axis" in kwargs:
+            return None
+        return by_columns
+    axis = kwargs.get("axis", 0)
+    if axis in (0, "index"):
+        return False
+    if axis in (1, "columns"):
+        return True
+    return None  # e.g. a graph-fed axis
+
+
+class DropOp(ProjectionOp):
+    """``df.drop(...)`` of columns.
+
+    Only the statically column-wise form becomes a ``DropOp`` (see
+    :func:`drop_targets_columns`). The pandas default (``axis=0``) drops *rows*
+    by index label, which extraction turns into a ``SelectionOp(DROP)``.
     """
     fields = ["args", "kwargs", "columns"]
     def __init__(self, args: tuple | list = (), kwargs: dict = {},
@@ -110,44 +136,25 @@ class DropOp(ProjectionOp):
         """The frame (operand 0) and the drop's resolved arguments."""
         return inputs[0], _resolve_args(self.args, inputs), _resolve_kwargs(self.kwargs, inputs)
 
-    def _drops_columns(self):
-        """Whether this drop works across the columns: True, False for a row drop,
-        or None when the axis isn't statically known.
-
-        pandas defaults to ``axis=0``, i.e. dropping *rows* by index label, which
-        leaves the column set untouched. ``axis`` is keyword-only on
-        ``DataFrame.drop``, so it can never arrive positionally in ``args``.
-        """
-        kwargs = self.kwargs or {}
-        if "columns" in kwargs:
-            return True
-        if "index" in kwargs and "axis" not in kwargs:
-            return False
-        axis = kwargs.get("axis", 0)
-        if axis in (0, "index"):
-            return False
-        if axis in (1, "columns"):
-            return True
-        return None  # e.g. a graph-fed axis
-
     def _dropped_columns(self):
         """Column labels being dropped, or ``None`` if not statically known."""
         kwargs = self.kwargs or {}
-        if "columns" in kwargs:
-            return kwargs["columns"]
+        for key in ("columns", "labels"):
+            if kwargs.get(key) is not None:
+                return kwargs[key]
         return self.args[0] if self.args else None
 
     def propagate_output_schema(self):
-        """``drop(columns=...)`` / ``axis=1`` removes the named columns; a row drop
-        (the default ``axis=0``, or ``index=``) leaves every column in place."""
-        drops_columns = self._drops_columns()
-        schema = self.inputs[0].output_schema
-        if drops_columns is None:
-            self.output_schema = None
-        elif drops_columns:
-            self.output_schema = _schema.drop_columns(schema, self._dropped_columns())
-        else:
-            self.output_schema = schema
+        """Removes the named columns from the input schema."""
+        self.output_schema = _schema.drop_columns(self.inputs[0].output_schema,
+                                                  self._dropped_columns())
+
+
+def make_drop_op(op: MethodCallOp) -> DropOp:
+    """Rewrite a column-wise ``df.drop(...)`` call into a :class:`DropOp`."""
+    new_op = DropOp(args=op.args, kwargs=op.kwargs, inputs=op.inputs, outputs=op.outputs)
+    op.replace_output_of_inputs(new_op)
+    return new_op
 
 
 class ColumnSelectorOp(ProjectionOp):

@@ -135,7 +135,8 @@ def _index_origin(op: IRNode, memo: dict):
         return DEFAULT if op.grouped and op.options.get("as_index", True) is False else new
     if isinstance(op, (MapOp, ColumnProjectionOp, ColumnSelectorOp, DropOp,
                        BaseEstimatorOp, ImplOp, SplitXOp)):
-        # Row-preserving.
+        # Row-preserving. A DropOp only drops columns; a row drop is a
+        # SelectionOp(DROP) and starts a new origin above.
         return first_input()
     if isinstance(op, MethodCallOp) and op.method_name in _ROW_PRESERVING_METHODS:
         return _common_origin(op, memo)

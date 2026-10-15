@@ -23,8 +23,8 @@ from stratum.optimizer.logical._aggregation_ops import (
 from stratum.optimizer.logical._sort_ops import SortOp, make_sort_op
 from stratum.optimizer.logical._projection_ops import (
     ColumnProjectionOp, ColumnSelectorOp, MetadataOp, ProjectionOp, DropOp,
-    make_column_projection_op, make_column_selector_op, make_reset_index_op,
-    resolve_selector_columns)
+    drop_targets_columns, make_column_projection_op, make_column_selector_op,
+    make_drop_op, make_reset_index_op, resolve_selector_columns)
 from stratum.optimizer.logical._map_ops import (
     MapOp, AccessorMapOp, ApplyUDFOp, AssignMapOp, AssignOp, DatetimeConversionOp,
     StringMethodOp, make_assign_map_op, make_datetime_conversion_op,
@@ -123,7 +123,7 @@ def _opaque_method_output_type(op: MethodCallOp) -> OutputType | None:
     """
     source = op.inputs[0].output_type
     if op.method_name in {"where", "map", "sort_values", "dropna", "fillna",
-                          "set_axis"}:
+                          "set_axis", "drop"}:
         return source
     if op.method_name == "to_frame" and source is OutputType.SERIES:
         return OutputType.FRAME
@@ -244,8 +244,14 @@ def extract_dataframe_op(op: Op, root: Op, selection_op = True, map_op = True,
                                     outputs=op.outputs)
                 op.replace_output_of_inputs(new_op)
             elif op.method_name == "drop":
-                new_op = DropOp(args=op.args, kwargs=op.kwargs, inputs=op.inputs, outputs=op.outputs)
-                op.replace_output_of_inputs(new_op)
+                # Columns are a projection, rows (the pandas default) a selection.
+                # An unknown axis, both axes at once, or a "column" drop on a
+                # series (a no-op in pandas) stays an opaque call.
+                drops_columns = drop_targets_columns(op.kwargs)
+                if drops_columns is False:
+                    new_op = make_selection_op(op, kind=SelectionKind.DROP)
+                elif drops_columns and op.inputs[0].output_type is OutputType.FRAME:
+                    new_op = make_drop_op(op)
             elif op.method_name == "apply":
                 new_op = ApplyUDFOp(args=op.args, kwargs=op.kwargs, inputs=op.inputs, outputs=op.outputs)
                 # apply on a column yields a column, on a frame yields a frame:

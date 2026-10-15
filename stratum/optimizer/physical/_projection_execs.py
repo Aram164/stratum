@@ -56,11 +56,8 @@ class PandasDropOp(DropOp, PhysicalOp):
 class PolarsDropOp(DropOp, PhysicalOp):
     @classmethod
     def supports(cls, op: DropOp, ctx) -> bool:
-        # Dropping by index label (rows, or a Series' entries) has no polars
-        # counterpart; only an explicit column drop translates.
-        if op._drops_columns() is not True:
-            op._unsupported_reason = "drops by index label"
-            return False
+        # Extraction only builds a DropOp for a column drop on a frame; row drops
+        # are SelectionOp(DROP).
         unsupported = set(op.kwargs or {}) - {"columns", "labels", "axis", "errors"}
         if unsupported:
             op._unsupported_reason = f"drop options {sorted(unsupported)}"

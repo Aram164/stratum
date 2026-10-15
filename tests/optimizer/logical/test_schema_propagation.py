@@ -171,22 +171,20 @@ class TestSchemaPropagation(unittest.TestCase):
         op.propagate_output_schema()
         self.assertEqual(["x", "y"], list(op.output_schema.keys()))
 
-    def test_row_drop_keeps_every_column(self):
+    def test_row_drop_is_a_selection_that_keeps_every_column(self):
         # `drop` defaults to axis=0, i.e. dropping *rows* by index label, which
         # leaves the column set untouched. Ground truth from pandas per spelling.
         frame = pd.DataFrame({"x": [1, 2], "y": [3, 4]})
-        schema = pl.Schema({"x": pl.Int64, "y": pl.Int64})
         cases = [
-            (dict(args=[[0]], kwargs={}), dict(labels=[0])),
-            (dict(args=[[0]], kwargs={"axis": 0}), dict(labels=[0], axis=0)),
-            (dict(args=[[0]], kwargs={"axis": "index"}), dict(labels=[0], axis="index")),
-            (dict(args=[], kwargs={"index": [0]}), dict(index=[0])),
+            ((([0],), {}), dict(labels=[0])),
+            ((([0],), {"axis": 0}), dict(labels=[0], axis=0)),
+            ((([0],), {"axis": "index"}), dict(labels=[0], axis="index")),
+            (((), {"index": [0]}), dict(index=[0])),
         ]
-        for op_kwargs, drop_kwargs in cases:
+        for (args, kwargs), drop_kwargs in cases:
             with self.subTest(drop_kwargs=drop_kwargs):
-                op = DropOp(**op_kwargs)
-                op.inputs = [_stub(schema)]
-                op.propagate_output_schema()
+                op = _schema_op(st.as_data_op(frame).drop(*args, **kwargs), SelectionOp)
+                self.assertIs(SelectionKind.DROP, op.kind)
                 self.assertEqual(list(frame.drop(**drop_kwargs).columns),
                                  list(op.output_schema.keys()))
 
@@ -196,12 +194,14 @@ class TestSchemaPropagation(unittest.TestCase):
         op.propagate_output_schema()
         self.assertEqual(["x"], list(op.output_schema.keys()))
 
-    def test_drop_with_a_graph_fed_axis_is_unknown(self):
-        # the axis decides whether this touches the columns at all.
-        op = DropOp(args=[["y"]], kwargs={"axis": OperandRef(1)})
-        op.inputs = [_stub(pl.Schema({"x": pl.Int64, "y": pl.Int64}))]
-        op.propagate_output_schema()
-        self.assertIsNone(op.output_schema)
+    def test_drop_by_labels_keyword_removes_columns(self):
+        op = _schema_op(st.as_data_op(self.df).drop(labels=["z"], axis=1), DropOp)
+        self.assertEqual(["x", "y"], list(op.output_schema.keys()))
+
+    def test_drop_on_both_axes_stays_an_opaque_call(self):
+        # neither a projection nor a selection: rows and columns go at once.
+        ops = _logical_ops(st.as_data_op(self.df).drop(index=[0], columns=["z"]))
+        self.assertFalse([o for o in ops if isinstance(o, (DropOp, SelectionOp))])
 
     def test_assign_adds_unknown_typed_column(self):
         op = _schema_op(st.as_data_op(self.df).assign(w=1), AssignMapOp)
