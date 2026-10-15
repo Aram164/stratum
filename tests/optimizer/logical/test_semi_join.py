@@ -9,7 +9,7 @@ from stratum.optimizer._optimize import OptConfig
 from stratum.optimizer.logical._relational_rewrites import promote_isin_to_filtering_join
 from stratum.optimizer.logical._join_ops import JoinOp
 from stratum.optimizer.logical._ops import Op, OutputType
-from stratum.optimizer.logical._selection_ops import SelectionKind, SelectionOp
+from stratum.optimizer.logical._selection_ops import MaskSelectionOp, SelectionOp
 from stratum.optimizer.physical._impl_selection import bind_op, FlagBasedSelector
 from stratum.optimizer.physical._join_execs import (
     PandasIsInSemiJoinOp, PandasJoinOp, PandasMergeSemiJoinOp,
@@ -226,13 +226,12 @@ class TestSemiJoinPromotion(unittest.TestCase):
         ops = self._plan(lambda: data[data["c"].isin(other["c"])],
                          semi_join_rewrite=False)
         self.assertEqual([], self._joins(ops))
-        masks = [o for o in ops if isinstance(o, SelectionOp)
-                 and o.kind is SelectionKind.MASK]
+        masks = [o for o in ops if isinstance(o, MaskSelectionOp)]
         self.assertEqual(1, len(masks))
 
     def test_a_filtered_series_is_not_promoted(self):
         # There is no left relation to join, only a predicate over values.
-        op = SelectionOp(kind=SelectionKind.MASK)
+        op = MaskSelectionOp()
         op.output_type = OutputType.SERIES
         self.assertIs(op, promote_isin_to_filtering_join(op))
 

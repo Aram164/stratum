@@ -1,60 +1,62 @@
-"""Physical implementations of ``SelectionOp`` (relational row selection).
+"""Physical implementations of the ``SelectionOp`` family (relational row selection).
 
-Same-shape backend-variant family. The MASK kind evaluates a backend-agnostic
-``ColumnExpr`` predicate; method-based kinds (dropna, head, ...) map to a
-per-backend method name.
+Impls register on the concrete selection subclasses and translate their
+backend-neutral fields into the library's own call; ``supports(op, ctx)`` only
+decides whether the backend can express those field values. Field values may be
+``OperandRef``s (graph-fed), resolved against ``inputs`` at execution.
 
-The pandas MASK implementations are mutually exclusive:
+``MaskSelectionOp`` has two mutually exclusive pandas impls:
 ``PandasQuerySelectionOp`` routes an expressible predicate through
-``DataFrame.query()``, while ``PandasIndexSelectionOp`` performs boolean
-indexing. ``PandasMethodBasedSelectionOp`` handles every pandas method-based kind,
-while Polars uses dedicated implementations with narrower feasibility checks.
-Every choice is made at plan time by ``supports(op, ctx)``.
+``DataFrame.query()``, while ``PandasIndexSelectionOp`` performs boolean indexing.
+``DropLabelsSelectionOp`` is pandas-only: polars rows carry no index labels.
 """
 
 from __future__ import annotations
 
 from numbers import Integral
 
-from stratum.optimizer.logical._base import OutputType, _resolve_args, _resolve_kwargs
+from stratum.optimizer.logical._base import OutputType, _resolve_kwargs, _resolve_operand
 from stratum.optimizer.logical._column_expr import EvalContext
 from stratum.optimizer.logical._selection_ops import (
-    _SELECTION_PANDAS_METHOD,
-    _SELECTION_POLARS_METHOD,
-    SelectionKind,
-    SelectionOp,
+    DropDuplicatesSelectionOp,
+    DropLabelsSelectionOp,
+    DropMissingSelectionOp,
+    MaskSelectionOp,
+    SampleSelectionOp,
+    SliceSelectionOp,
 )
 from stratum.optimizer.physical._physical_ops import PhysicalOp
 from stratum.optimizer.physical._representation import refuse_unsupported_exprs
 from stratum.optimizer.physical._registry import physical_impl
 
 
-def _query_selectable(op: SelectionOp) -> bool:
+# --- MaskSelectionOp ------------------------------------------------------------
+
+def _query_selectable(op: MaskSelectionOp) -> bool:
     """Whether ``op`` can run through ``DataFrame.query()``.
 
-    Only a MASK predicate that compiles to a query string qualifies; an
+    Only a predicate that compiles to a query string qualifies; an
     ``OperandLeaf`` or ``.str`` accessor yields ``None`` from ``to_pandas_query``
     and must go through boolean masking instead. ``query`` is also frame-only, so
     a masked series never takes this path; today that is implied (a predicate over
     a series always references the series itself, which compiles to an
     ``OperandLeaf``) but the check does not rely on it.
     """
-    return (op.kind is SelectionKind.MASK
-            and op.output_type is OutputType.FRAME
+    return (op.output_type is OutputType.FRAME
             and op.predicate is not None
             and op.predicate.to_pandas_query({}) is not None)
 
 
-@physical_impl(of=SelectionOp, backend="pandas")
-class PandasQuerySelectionOp(SelectionOp, PhysicalOp):
-    """MASK selection via ``DataFrame.query()`` (pandas fast path).
+@physical_impl(of=MaskSelectionOp, backend="pandas")
+class PandasQuerySelectionOp(MaskSelectionOp, PhysicalOp):
+    """Mask selection via ``DataFrame.query()`` (pandas fast path).
 
     Chosen only when ``ctx.pandas_query`` is set and the predicate is
     query-expressible, so ``process`` never has to fall back.
     """
 
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
+    def supports(cls, op: MaskSelectionOp, ctx) -> bool:
         return ctx.pandas_query and _query_selectable(op)
 
     def on_impl_selected(self, ctx) -> None:
@@ -68,13 +70,13 @@ class PandasQuerySelectionOp(SelectionOp, PhysicalOp):
         return inputs[0].query(self.query, local_dict=self.query_params)
 
 
-@physical_impl(of=SelectionOp, backend="pandas")
-class PandasIndexSelectionOp(SelectionOp, PhysicalOp):
+@physical_impl(of=MaskSelectionOp, backend="pandas")
+class PandasIndexSelectionOp(MaskSelectionOp, PhysicalOp):
     """Boolean-mask indexing when the query fast path does not apply."""
 
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        return op.kind is SelectionKind.MASK and not (ctx.pandas_query and _query_selectable(op))
+    def supports(cls, op: MaskSelectionOp, ctx) -> bool:
+        return not (ctx.pandas_query and _query_selectable(op))
 
     def process(self, mode: str, inputs: list):
         _obj = inputs[0]
@@ -82,33 +84,10 @@ class PandasIndexSelectionOp(SelectionOp, PhysicalOp):
         return _obj[self.predicate.to_pandas(ctx)]
 
 
-@physical_impl(of=SelectionOp, backend="pandas")
-class PandasMethodBasedSelectionOp(SelectionOp, PhysicalOp):
+@physical_impl(of=MaskSelectionOp, backend="polars")
+class PolarsMaskSelectionOp(MaskSelectionOp, PhysicalOp):
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        return op.kind in _SELECTION_PANDAS_METHOD
-
-    def process(self, mode: str, inputs: list):
-        _obj = inputs[0]
-        _args = _resolve_args(self.args, inputs) if self.args else []
-        _kwargs = _resolve_kwargs(self.kwargs, inputs) if self.kwargs else {}
-        method_name = _SELECTION_PANDAS_METHOD.get(self.kind)
-        if method_name is None:
-            raise NotImplementedError(f"SelectionOp.process is not implemented for kind {self.kind.name}.")
-        return getattr(_obj, method_name)(*_args, **_kwargs)
-
-
-@physical_impl(of=SelectionOp, backend="polars")
-class PolarsMaskSelectionOp(SelectionOp, PhysicalOp):
-    @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        if op.kind is SelectionKind.DROP:
-            # No polars impl takes DROP: polars rows carry no index labels to
-            # drop by. Refused here so the plan records why.
-            op._unsupported_reason = "drops by index label"
-            return False
-        if op.kind is not SelectionKind.MASK:
-            return False
+    def supports(cls, op: MaskSelectionOp, ctx) -> bool:
         # A pandas Series's labelled values stay on pandas: its frame library is
         # pandas, which this impl does not accept (#226).
         return op.predicate is None or refuse_unsupported_exprs(op, [op.predicate])
@@ -119,201 +98,164 @@ class PolarsMaskSelectionOp(SelectionOp, PhysicalOp):
         return _obj.filter(self.predicate.to_polars(ctx))
 
 
-def get_param(op: SelectionOp, pos: int, key: str):
-    if op.args and len(op.args) > pos:
-        return op.args[pos]
-    if op.kwargs and key in op.kwargs:
-        return op.kwargs[key]
-    return None
+# --- SliceSelectionOp -----------------------------------------------------------
+
+def _slice(op: SliceSelectionOp, inputs: list):
+    """``head``/``tail`` mean the same on pandas and polars, negative ``n`` included."""
+    n = _resolve_operand(op.n, inputs)
+    return inputs[0].tail(n) if op.from_end else inputs[0].head(n)
 
 
-def get_polars_sample_kwargs(op: SelectionOp, inputs: list):
-    n = get_param(op, 0, "n")
-    fraction = get_param(op, 1, "frac")
-    with_replacement = get_param(op, 2, "replace")
-    seed = get_param(op, 4, "random_state")
+@physical_impl(of=SliceSelectionOp, backend="pandas")
+class PandasSliceSelectionOp(SliceSelectionOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        return _slice(self, inputs)
 
-    n, fraction = _resolve_args((n, fraction), inputs)
-    if None not in (n, fraction):
+
+@physical_impl(of=SliceSelectionOp, backend="polars")
+class PolarsSliceSelectionOp(SliceSelectionOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        return _slice(self, inputs)
+
+
+# --- SampleSelectionOp ----------------------------------------------------------
+
+@physical_impl(of=SampleSelectionOp, backend="pandas")
+class PandasSampleSelectionOp(SampleSelectionOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        kwargs = _resolve_kwargs({
+            "n": self.n, "frac": self.frac, "replace": self.with_replacement,
+            "weights": self.weights, "random_state": self.seed,
+            "ignore_index": self.ignore_index,
+        }, inputs)
+        return inputs[0].sample(**kwargs)
+
+
+def get_polars_sample_kwargs(op: SampleSelectionOp, inputs: list) -> dict:
+    """``DataFrame.sample`` kwargs for ``op``'s fields, resolved against ``inputs``."""
+    n, frac, with_replacement, seed = (
+        _resolve_operand(v, inputs) for v in (op.n, op.frac, op.with_replacement, op.seed))
+    if n is not None and frac is not None:
         raise ValueError("PolarsSampleSelectionOp: provide n or frac exclusively, not both")
-
-    # pandas returns sampled rows in random order; polars keeps input order
-    # unless asked to shuffle.
-    kwargs = dict(shuffle=True)
+    # Sampled rows come back in random order; polars keeps input order unless
+    # asked to shuffle.
+    kwargs = dict(shuffle=True, with_replacement=with_replacement)
     if n is not None:
         kwargs["n"] = n
-
-    if fraction is not None:
-        kwargs["n"] = round(fraction * len(inputs[0]))
-
-    if with_replacement is not None:
-        kwargs["with_replacement"] = _resolve_args((with_replacement,), inputs)[0]
-
+    if frac is not None:
+        # Round the count like pandas does, rather than polars' own fraction.
+        kwargs["n"] = round(frac * len(inputs[0]))
     if seed is not None:
-        kwargs["seed"] = _resolve_args((seed,), inputs)[0]
-
+        kwargs["seed"] = seed
     return kwargs
 
 
-@physical_impl(of=SelectionOp, backend="polars")
-class PolarsSampleSelectionOp(SelectionOp, PhysicalOp):
-    """Reject any configuration that cannot be mirrored with Polars."""
+@physical_impl(of=SampleSelectionOp, backend="polars")
+class PolarsSampleSelectionOp(SampleSelectionOp, PhysicalOp):
+    """Unweighted samples with an integer (or no) seed."""
 
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        random_state = get_param(op, 4, "random_state")
-        weights = get_param(op, 3, "weights")
-        axis = get_param(op, 5, "axis")
-        return op.kind is SelectionKind.SAMPLE and weights is None and (isinstance(random_state, Integral) or random_state is None) and axis in (None, 0, "index", "rows")
+    def supports(cls, op: SampleSelectionOp, ctx) -> bool:
+        return op.weights is None and (op.seed is None or isinstance(op.seed, Integral))
 
     def process(self, mode: str, inputs: list):
-        _obj = inputs[0]
-        method_name = _SELECTION_POLARS_METHOD.get(self.kind)
-        kwargs = get_polars_sample_kwargs(self, inputs)
-        return getattr(_obj, method_name)(**kwargs)
+        return inputs[0].sample(**get_polars_sample_kwargs(self, inputs))
 
 
-@physical_impl(of=SelectionOp, backend="polars")
-class PolarsSliceSelectionOp(SelectionOp, PhysicalOp):
+# --- DropDuplicatesSelectionOp --------------------------------------------------
+
+_PANDAS_KEEP = {"first": "first", "last": "last", "none": False}
+
+
+@physical_impl(of=DropDuplicatesSelectionOp, backend="pandas")
+class PandasDropDuplicatesSelectionOp(DropDuplicatesSelectionOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        kwargs = {"keep": _PANDAS_KEEP[self.keep], "ignore_index": self.ignore_index}
+        if self.subset is not None:  # a Series takes no subset
+            kwargs["subset"] = self.subset
+        return inputs[0].drop_duplicates(**_resolve_kwargs(kwargs, inputs))
+
+
+@physical_impl(of=DropDuplicatesSelectionOp, backend="polars")
+class PolarsDropDuplicatesSelectionOp(DropDuplicatesSelectionOp, PhysicalOp):
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        return op.kind in (SelectionKind.HEAD, SelectionKind.TAIL)
+    def supports(cls, op: DropDuplicatesSelectionOp, ctx) -> bool:
+        return op.output_type is OutputType.FRAME
 
     def process(self, mode: str, inputs: list):
-        n = get_param(self, 0, "n")
-        _obj = inputs[0]
-
-        method_name = _SELECTION_POLARS_METHOD[self.kind]
-        if n is not None:
-            n = _resolve_args((n,), inputs)[0]
-            return getattr(_obj, method_name)(n)
-
-        return getattr(_obj, method_name)()
+        subset = _resolve_operand(self.subset, inputs)
+        return inputs[0].unique(subset=subset, keep=self.keep, maintain_order=True)
 
 
-def get_polars_unique_kwargs(op: SelectionOp, inputs: list):
-    subset = get_param(op, 0, "subset")
-    keep = get_param(op, 1, "keep")
-    kwargs = dict()
+@physical_impl(of=DropDuplicatesSelectionOp, backend="polars")
+class PolarsSeriesDropDuplicatesSelectionOp(DropDuplicatesSelectionOp, PhysicalOp):
+    _KEEP_MASK = {"first": "is_first_distinct", "last": "is_last_distinct", "none": "is_unique"}
 
-    if subset is not None:
-        subset = _resolve_args((subset,), inputs)[0]
-        kwargs["subset"] = subset
-    if keep is not None:
-        keep = _resolve_args((keep,), inputs)[0]
-    if keep is False:
-        keep = "none"
-    elif keep is None:
-        keep = "first"
-
-    kwargs["keep"] = keep
-    kwargs["maintain_order"] = True
-
-    return kwargs
-
-
-@physical_impl(of=SelectionOp, backend="polars")
-class PolarsDropDuplicatesSelectionOp(SelectionOp, PhysicalOp):
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        inplace = get_param(op, 2, "inplace")
-        return (op.kind is SelectionKind.DROP_DUPLICATES
-                and op.output_type is OutputType.FRAME
-                and (inplace is None or inplace is False))
-
-    def process(self, mode: str, inputs: list):
-        _obj = inputs[0]
-        method_name = _SELECTION_POLARS_METHOD[self.kind]
-        kwargs = get_polars_unique_kwargs(self, inputs)
-
-        return getattr(_obj, method_name)(**kwargs)
-
-
-@physical_impl(of=SelectionOp, backend="polars")
-class PolarsSeriesDropDuplicatesSelectionOp(SelectionOp, PhysicalOp):
-    @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        inplace = get_param(op, 2, "inplace")
-        return (op.kind is SelectionKind.DROP_DUPLICATES
-                and op.output_type is OutputType.SERIES
-                and (inplace is None or inplace is False))
+    def supports(cls, op: DropDuplicatesSelectionOp, ctx) -> bool:
+        return op.output_type is OutputType.SERIES
 
     def process(self, mode: str, inputs: list):
         series = inputs[0]
-        kwargs = get_polars_unique_kwargs(self, inputs)
-        if "subset" in kwargs:
-            raise TypeError("Series.drop_duplicates() got an unexpected keyword argument 'subset'")
-        keep = kwargs["keep"]
-        if keep == "first":
-            mask = series.is_first_distinct()
-        elif keep == "last":
-            mask = series.is_last_distinct()
-        elif keep == "none":
-            mask = series.is_unique()
-        else:
-            raise ValueError(f"keep must be either 'first', 'last' or False, got {keep!r}")
-        return series.filter(mask)
+        return series.filter(getattr(series, self._KEEP_MASK[self.keep])())
 
 
-def _resolve_dropna_kwargs(op: SelectionOp, inputs: list):
-    return _resolve_kwargs(op.kwargs, inputs) if op.kwargs else {}
+# --- DropMissingSelectionOp -----------------------------------------------------
+
+@physical_impl(of=DropMissingSelectionOp, backend="pandas")
+class PandasDropMissingSelectionOp(DropMissingSelectionOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        kwargs = {"ignore_index": self.ignore_index}
+        if self.subset is not None:  # a Series takes neither subset nor thresh
+            kwargs["subset"] = self.subset
+        if self.min_present is not None:
+            kwargs["thresh"] = self.min_present
+        return inputs[0].dropna(**_resolve_kwargs(kwargs, inputs))
 
 
-def _dropna_predicate(kwargs: dict):
+def _present_count_predicate(subset, min_present):
+    """Row predicate: enough of the ``subset`` columns hold a value.
+
+    NaN counts as missing in float columns, as it does in pandas.
+    """
     import polars as pl
     from polars import selectors as cs
 
-    if "how" in kwargs and "thresh" in kwargs:
-        raise TypeError("You cannot set both the how and thresh arguments at the same time.")
-
-    subset = kwargs.get("subset")
     selected = cs.all() if subset is None else cs.by_name(subset)
-    present = ((selected & cs.float()).fill_nan(None).is_not_null(), (selected - cs.float()).is_not_null())
-
-    if "thresh" in kwargs:
-        return pl.sum_horizontal(*(expr.cast(pl.UInt32) for expr in present)) >= kwargs["thresh"]
-
-    how = kwargs.get("how", "any")
-    if how == "any":
+    present = ((selected & cs.float()).fill_nan(None).is_not_null(),
+               (selected - cs.float()).is_not_null())
+    if min_present is None:
         return pl.all_horizontal(*present)
-    if how == "all":
-        return pl.any_horizontal(*present)
-    raise ValueError(f"invalid how option: {how}")
+    return pl.sum_horizontal(*(expr.cast(pl.UInt32) for expr in present)) >= min_present
 
 
-@physical_impl(of=SelectionOp, backend="polars")
-class PolarsDropnaSelectionOp(SelectionOp, PhysicalOp):
+@physical_impl(of=DropMissingSelectionOp, backend="polars")
+class PolarsDropMissingSelectionOp(DropMissingSelectionOp, PhysicalOp):
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        kwargs = op.kwargs or {}
-        axis = kwargs.get("axis")
-        inplace = kwargs.get("inplace")
-        return (op.kind is SelectionKind.DROPNA
-                and op.output_type is OutputType.FRAME
-                and not op.args and axis in (None, 0, "index", "rows")
-                and inplace in (None, False))
+    def supports(cls, op: DropMissingSelectionOp, ctx) -> bool:
+        return op.output_type is OutputType.FRAME
 
     def process(self, mode: str, inputs: list):
-        _obj = inputs[0]
-        kwargs = _resolve_dropna_kwargs(self, inputs)
-        return _obj.filter(_dropna_predicate(kwargs))
+        subset, min_present = (_resolve_operand(v, inputs)
+                               for v in (self.subset, self.min_present))
+        return inputs[0].filter(_present_count_predicate(subset, min_present))
 
 
-@physical_impl(of=SelectionOp, backend="polars")
-class PolarsSeriesDropnaSelectionOp(SelectionOp, PhysicalOp):
+@physical_impl(of=DropMissingSelectionOp, backend="polars")
+class PolarsSeriesDropMissingSelectionOp(DropMissingSelectionOp, PhysicalOp):
     @classmethod
-    def supports(cls, op: SelectionOp, ctx) -> bool:
-        kwargs = op.kwargs or {}
-        axis = kwargs.get("axis")
-        inplace = kwargs.get("inplace")
-        return (op.kind is SelectionKind.DROPNA
-                and op.output_type is OutputType.SERIES
-                and not op.args and axis in (None, 0, "index", "rows")
-                and inplace in (None, False))
+    def supports(cls, op: DropMissingSelectionOp, ctx) -> bool:
+        return op.output_type is OutputType.SERIES
 
     def process(self, mode: str, inputs: list):
-        kwargs = _resolve_dropna_kwargs(self, inputs)
-        for key in ("subset", "thresh"):
-            if key in kwargs:
-                raise TypeError(f"Series.dropna() got an unexpected keyword argument {key!r}")
         return inputs[0].drop_nulls().drop_nans()
+
+
+# --- DropLabelsSelectionOp ------------------------------------------------------
+
+@physical_impl(of=DropLabelsSelectionOp, backend="pandas")
+class PandasDropLabelsSelectionOp(DropLabelsSelectionOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        kwargs = _resolve_kwargs(
+            {"index": self.labels, "level": self.level, "errors": self.errors}, inputs)
+        return inputs[0].drop(**kwargs)

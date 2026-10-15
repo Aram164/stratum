@@ -92,7 +92,7 @@ class OptConfig():
         ``FlagBasedSelector(backend="polars")``, which pins a plan to one
         dataframe backend so the polars impls can be exercised directly.
 
-        ``pandas_query`` lets ``PandasQuerySelectionOp`` bid for a MASK selection
+        ``pandas_query`` lets ``PandasQuerySelectionOp`` bid for a mask selection
         whose predicate compiles to a query string. It lives here, on the
         optimizer's own config, because it is a technical impl choice between two
         pandas selection kernels rather than anything a user should reason about:

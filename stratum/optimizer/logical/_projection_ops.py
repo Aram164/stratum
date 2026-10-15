@@ -120,7 +120,7 @@ class DropOp(ProjectionOp):
 
     Only the statically column-wise form becomes a ``DropOp`` (see
     :func:`drop_targets_columns`). The pandas default (``axis=0``) drops *rows*
-    by index label, which extraction turns into a ``SelectionOp(DROP)``.
+    by index label, which extraction turns into a ``DropLabelsSelectionOp``.
     """
     fields = ["args", "kwargs", "columns"]
     def __init__(self, args: tuple | list = (), kwargs: dict = {},

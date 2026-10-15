@@ -57,7 +57,7 @@ class PolarsDropOp(DropOp, PhysicalOp):
     @classmethod
     def supports(cls, op: DropOp, ctx) -> bool:
         # Extraction only builds a DropOp for a column drop on a frame; row drops
-        # are SelectionOp(DROP).
+        # are DropLabelsSelectionOp.
         unsupported = set(op.kwargs or {}) - {"columns", "labels", "axis", "errors"}
         if unsupported:
             op._unsupported_reason = f"drop options {sorted(unsupported)}"

@@ -21,7 +21,7 @@ from stratum.optimizer._optimize import OptConfig, optimize as optimize_
 from stratum.optimizer.logical._column_expr import BinOpExpr, Col, Const
 from stratum.optimizer.logical._map_ops import AssignMapOp
 from stratum.optimizer.logical._ops import ValueOp
-from stratum.optimizer.logical._selection_ops import SelectionKind, SelectionOp
+from stratum.optimizer.logical._selection_ops import MaskSelectionOp, SelectionOp
 from stratum.optimizer.physical._physical_ops import PhysicalOp
 from stratum.optimizer.physical._conversion import ConversionOp
 from stratum.optimizer.physical._selection_execs import PolarsMaskSelectionOp
@@ -191,7 +191,7 @@ def test_q1_plan_folds_filter_and_map(polars):
     sel = _one(ops, SelectionOp)
     amo = _one(ops, AssignMapOp)
 
-    assert sel.kind is SelectionKind.MASK
+    assert isinstance(sel, MaskSelectionOp)
 
     disc_price = BinOpExpr(operator.mul,
                            Col("l_extendedprice"),

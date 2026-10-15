@@ -14,8 +14,9 @@ import numpy as np
 # `from ..._dataframe_ops import X` import sites keep working (re-export hub).
 from stratum.optimizer.logical._source_ops import DataSourceOp, make_read_op, try_make_read_op
 from stratum.optimizer.logical._selection_ops import (
-    SelectionKind, SelectionOp, _SELECTION_METHODS, make_selection_op,
-    is_mask_selection, make_mask_selection_op)
+    SelectionOp, MaskSelectionOp, DropMissingSelectionOp, DropDuplicatesSelectionOp,
+    SliceSelectionOp, SampleSelectionOp, DropLabelsSelectionOp, _SELECTION_METHODS,
+    make_selection_op, is_mask_selection, make_mask_selection_op)
 from stratum.optimizer.logical._aggregation_ops import (
     AggregateOp, GroupedDataframeOp, _AGG_METHODS, _AGG_FUNCS, _is_groupby_op,
     _is_aggregation, _is_value_counts, _extract_grouping, _extract_aggregations,
@@ -249,7 +250,7 @@ def extract_dataframe_op(op: Op, root: Op, selection_op = True, map_op = True,
                 # series (a no-op in pandas) stays an opaque call.
                 drops_columns = drop_targets_columns(op.kwargs)
                 if drops_columns is False:
-                    new_op = make_selection_op(op, kind=SelectionKind.DROP)
+                    new_op = make_selection_op(op)
                 elif drops_columns and op.inputs[0].output_type is OutputType.FRAME:
                     new_op = make_drop_op(op)
             elif op.method_name == "apply":
@@ -286,7 +287,7 @@ def extract_dataframe_op(op: Op, root: Op, selection_op = True, map_op = True,
         elif isinstance(op, (BinOp, UnaryOp)):
             op.output_type = op.inputs[0].output_type
 
-        # GetItem: a mask selection df[bool_series] folds into a SelectionOp;
+        # GetItem: a mask selection df[bool_series] folds into a MaskSelectionOp;
         # otherwise it is a column projection (SERIES) / sub-frame / row selection.
         elif isinstance(op, GetItemOp):
             if is_mask_selection(op):

@@ -13,9 +13,9 @@ from stratum.optimizer._op_utils import topological_iterator
 from stratum.optimizer.logical._dataframe_ops import (
     AggregateOp, AssignMapOp, AssignOp, ColumnProjectionOp, ConcatOp, DataSourceOp,
     DatetimeConversionOp, DropOp, AccessorMapOp, JoinOp, MetadataOp,
-    SelectionKind, SelectionOp, SplitOp, SplitOutput)
+    DropLabelsSelectionOp, SelectionOp, SliceSelectionOp, SplitOp, SplitOutput)
 from stratum.optimizer.logical._ops import (
-    BinOp, ChoiceOp, GetItemOp, Op, OperandRef, OutputType, UnaryOp)
+    BinOp, ChoiceOp, GetItemOp, MethodCallOp, Op, OperandRef, OutputType, UnaryOp)
 from stratum.optimizer.logical._map_ops import StringMethodOp
 from stratum.optimizer._optimize import optimize as optimize_full
 from stratum.optimizer.logical._candidate_ops import ScoreCandidatesOp
@@ -184,7 +184,7 @@ class TestSchemaPropagation(unittest.TestCase):
         for (args, kwargs), drop_kwargs in cases:
             with self.subTest(drop_kwargs=drop_kwargs):
                 op = _schema_op(st.as_data_op(frame).drop(*args, **kwargs), SelectionOp)
-                self.assertIs(SelectionKind.DROP, op.kind)
+                self.assertIsInstance(op, DropLabelsSelectionOp)
                 self.assertEqual(list(frame.drop(**drop_kwargs).columns),
                                  list(op.output_schema.keys()))
 
@@ -261,19 +261,21 @@ class TestSchemaPropagation(unittest.TestCase):
                 op = _schema_op(st.as_data_op(frame).dropna(**kwargs), SelectionOp)
                 self.assertEqual(["a", "b"], list(op.output_schema.keys()))
 
-    def test_column_wise_dropna_is_unknown(self):
+    def test_column_wise_dropna_stays_an_opaque_call(self):
         # `dropna(axis=1)` drops the columns that contain nulls, so it is not a
         # relational selection at all, and which columns go is value-dependent.
         frame = pd.DataFrame({"a": [1.0, 2.0], "b": [None, 3.0]})
         self.assertEqual(["a"], list(frame.dropna(axis=1).columns))
         for kwargs in ({"axis": 1}, {"axis": "columns"}):
             with self.subTest(kwargs=kwargs):
-                op = _schema_op(st.as_data_op(frame).dropna(**kwargs), SelectionOp)
+                ops = _logical_ops(st.as_data_op(frame).dropna(**kwargs))
+                self.assertFalse([o for o in ops if isinstance(o, SelectionOp)])
+                op = _schema_op(st.as_data_op(frame).dropna(**kwargs), MethodCallOp)
                 self.assertIsNone(op.output_schema)
 
     def test_selection_without_a_source_edge_is_unknown(self):
         # a detached selection has no input to pass a schema through.
-        op = SelectionOp(kind=SelectionKind.HEAD)
+        op = SliceSelectionOp()
         op.propagate_output_schema()
         self.assertIsNone(op.output_schema)
 
