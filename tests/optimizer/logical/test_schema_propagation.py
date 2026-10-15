@@ -12,11 +12,11 @@ from stratum.optimizer._optimize import OptConfig, logical_optimize
 from stratum.optimizer._op_utils import topological_iterator
 from stratum.optimizer.logical._dataframe_ops import (
     AggregateOp, AssignMapOp, AssignOp, ColumnProjectionOp, ConcatOp, DataSourceOp,
-    DatetimeConversionOp, DropOp, GetAttrProjectionOp, JoinOp, MetadataOp,
+    DatetimeConversionOp, DropOp, AccessorMapOp, JoinOp, MetadataOp,
     SelectionKind, SelectionOp, SplitOp, SplitOutput)
 from stratum.optimizer.logical._ops import (
     BinOp, ChoiceOp, GetItemOp, Op, OperandRef, OutputType, UnaryOp)
-from stratum.optimizer.logical._projection_ops import StringMethodOp
+from stratum.optimizer.logical._map_ops import StringMethodOp
 from stratum.optimizer._optimize import optimize as optimize_full
 from stratum.optimizer.logical._candidate_ops import ScoreCandidatesOp
 from stratum.optimizer.logical._column_methods import ColumnMethodOp
@@ -651,7 +651,7 @@ class TestSchemaPropagation(unittest.TestCase):
 
     # --- accessor projection (.dt.year, ...) ----------------------------
     def test_getattr_projection_keeps_columns_retypes(self):
-        op = GetAttrProjectionOp(attr_name=["dt", "year"])
+        op = AccessorMapOp(attr_name=["dt", "year"])
         op.inputs = [_stub(pl.Schema({"d": pl.Datetime("us")}))]
         op.propagate_output_schema()
         # column name is preserved; the dtype is no longer tracked.
@@ -668,12 +668,12 @@ class TestSchemaPropagation(unittest.TestCase):
         for attr_name in (["T"], ["values"], ["shape"], ["index"], ["columns"],
                           ["loc"], ["iloc"], ["dt"], ["dt", "year", "extra"]):
             with self.subTest(attr_name=attr_name):
-                op = GetAttrProjectionOp(attr_name=attr_name, inputs=[src], outputs=[])
+                op = AccessorMapOp(attr_name=attr_name, inputs=[src], outputs=[])
                 op.propagate_output_schema()
                 self.assertIsNone(op.output_schema)
 
     def test_getattr_projection_unknown_input_propagates(self):
-        op = GetAttrProjectionOp(attr_name="dt")
+        op = AccessorMapOp(attr_name="dt")
         op.inputs = [_stub(None)]
         op.propagate_output_schema()
         self.assertIsNone(op.output_schema)
@@ -688,7 +688,7 @@ class TestSchemaPropagation(unittest.TestCase):
         src = _stub(pl.Schema({"t": pl.Duration("us")}))
         for attr in ("components", "isocalendar"):
             with self.subTest(attr=attr):
-                op = GetAttrProjectionOp(attr_name=["dt", attr], inputs=[src], outputs=[])
+                op = AccessorMapOp(attr_name=["dt", attr], inputs=[src], outputs=[])
                 op.propagate_output_schema()
                 self.assertIsNone(op.output_schema)
 
@@ -696,7 +696,7 @@ class TestSchemaPropagation(unittest.TestCase):
         # Guards the allow-list against a member that isn't actually one-to-one.
         stamps = pd.Series(pd.to_datetime(["2024-03-05 01:02:03"]))
         spans = pd.Series(pd.to_timedelta(["1 days 2:03:04"]))
-        for attr in GetAttrProjectionOp.ELEMENTWISE_ACCESSORS["dt"]:
+        for attr in AccessorMapOp.ELEMENTWISE_ACCESSORS["dt"]:
             with self.subTest(attr=attr):
                 values = [getattr(s.dt, attr, None) for s in (stamps, spans)]
                 self.assertTrue(any(isinstance(v, pd.Series) for v in values))
