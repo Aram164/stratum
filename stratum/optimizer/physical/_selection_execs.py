@@ -137,7 +137,9 @@ def get_polars_sample_kwargs(op: SelectionOp, inputs: list):
     if None not in (n, fraction):
         raise ValueError("PolarsSampleSelectionOp: provide n or frac exclusively, not both")
 
-    kwargs = dict()
+    # pandas returns sampled rows in random order; polars keeps input order
+    # unless asked to shuffle.
+    kwargs = dict(shuffle=True)
     if n is not None:
         kwargs["n"] = n
 
@@ -215,7 +217,9 @@ class PolarsDropDuplicatesSelectionOp(SelectionOp, PhysicalOp):
     @classmethod
     def supports(cls, op: SelectionOp, ctx) -> bool:
         inplace = get_param(op, 2, "inplace")
-        return op.kind is SelectionKind.DROP_DUPLICATES and (inplace is None or inplace is False)
+        return (op.kind is SelectionKind.DROP_DUPLICATES
+                and op.output_type is OutputType.FRAME
+                and (inplace is None or inplace is False))
 
     def process(self, mode: str, inputs: list):
         _obj = inputs[0]
@@ -223,6 +227,32 @@ class PolarsDropDuplicatesSelectionOp(SelectionOp, PhysicalOp):
         kwargs = get_polars_unique_kwargs(self, inputs)
 
         return getattr(_obj, method_name)(**kwargs)
+
+
+@physical_impl(of=SelectionOp, backend="polars")
+class PolarsSeriesDropDuplicatesSelectionOp(SelectionOp, PhysicalOp):
+    @classmethod
+    def supports(cls, op: SelectionOp, ctx) -> bool:
+        inplace = get_param(op, 2, "inplace")
+        return (op.kind is SelectionKind.DROP_DUPLICATES
+                and op.output_type is OutputType.SERIES
+                and (inplace is None or inplace is False))
+
+    def process(self, mode: str, inputs: list):
+        series = inputs[0]
+        kwargs = get_polars_unique_kwargs(self, inputs)
+        if "subset" in kwargs:
+            raise TypeError("Series.drop_duplicates() got an unexpected keyword argument 'subset'")
+        keep = kwargs["keep"]
+        if keep == "first":
+            mask = series.is_first_distinct()
+        elif keep == "last":
+            mask = series.is_last_distinct()
+        elif keep == "none":
+            mask = series.is_unique()
+        else:
+            raise ValueError(f"keep must be either 'first', 'last' or False, got {keep!r}")
+        return series.filter(mask)
 
 
 def _resolve_dropna_kwargs(op: SelectionOp, inputs: list):
@@ -258,9 +288,32 @@ class PolarsDropnaSelectionOp(SelectionOp, PhysicalOp):
         kwargs = op.kwargs or {}
         axis = kwargs.get("axis")
         inplace = kwargs.get("inplace")
-        return op.kind is SelectionKind.DROPNA and not op.args and axis in (None, 0, "index", "rows") and inplace in (None, False)
+        return (op.kind is SelectionKind.DROPNA
+                and op.output_type is OutputType.FRAME
+                and not op.args and axis in (None, 0, "index", "rows")
+                and inplace in (None, False))
 
     def process(self, mode: str, inputs: list):
         _obj = inputs[0]
         kwargs = _resolve_dropna_kwargs(self, inputs)
         return _obj.filter(_dropna_predicate(kwargs))
+
+
+@physical_impl(of=SelectionOp, backend="polars")
+class PolarsSeriesDropnaSelectionOp(SelectionOp, PhysicalOp):
+    @classmethod
+    def supports(cls, op: SelectionOp, ctx) -> bool:
+        kwargs = op.kwargs or {}
+        axis = kwargs.get("axis")
+        inplace = kwargs.get("inplace")
+        return (op.kind is SelectionKind.DROPNA
+                and op.output_type is OutputType.SERIES
+                and not op.args and axis in (None, 0, "index", "rows")
+                and inplace in (None, False))
+
+    def process(self, mode: str, inputs: list):
+        kwargs = _resolve_dropna_kwargs(self, inputs)
+        for key in ("subset", "thresh"):
+            if key in kwargs:
+                raise TypeError(f"Series.dropna() got an unexpected keyword argument {key!r}")
+        return inputs[0].drop_nulls().drop_nans()

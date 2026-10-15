@@ -24,7 +24,7 @@ from stratum.optimizer.logical._ops import ValueOp
 from stratum.optimizer.logical._selection_ops import SelectionKind, SelectionOp
 from stratum.optimizer.physical._physical_ops import PhysicalOp
 from stratum.optimizer.physical._conversion import ConversionOp
-from stratum.optimizer.physical._selection_execs import PolarsSelectionOp
+from stratum.optimizer.physical._selection_execs import PolarsMaskSelectionOp
 from stratum.optimizer.physical._map_execs import PolarsAssignMapOp
 from stratum.frontend._skrub_graph import get_data
 
@@ -207,7 +207,7 @@ def test_q1_plan_folds_filter_and_map(polars):
         assert isinstance(op, PhysicalOp), \
             f"{type(op).__name__} was not bound to a physical implementation"
     if polars:
-        assert isinstance(sel, PolarsSelectionOp)
+        assert isinstance(sel, PolarsMaskSelectionOp)
         assert isinstance(amo, PolarsAssignMapOp)
 
 

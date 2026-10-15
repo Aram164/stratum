@@ -19,6 +19,8 @@ from stratum.optimizer.physical._selection_execs import (
     PandasMethodBasedSelectionOp,
     PolarsDropDuplicatesSelectionOp,
     PolarsDropnaSelectionOp,
+    PolarsSeriesDropDuplicatesSelectionOp,
+    PolarsSeriesDropnaSelectionOp,
     PolarsMaskSelectionOp,
     PolarsSampleSelectionOp,
     PolarsSliceSelectionOp,
@@ -59,7 +61,8 @@ def duplicate_frames():
     (PolarsMaskSelectionOp, (SelectionKind.MASK,)),
     (PolarsSliceSelectionOp, (SelectionKind.HEAD, SelectionKind.TAIL)),
     (PandasMethodBasedSelectionOp, (SelectionKind.DROPNA, SelectionKind.DROP_DUPLICATES,
-                              SelectionKind.HEAD, SelectionKind.TAIL, SelectionKind.SAMPLE)),
+                                    SelectionKind.HEAD, SelectionKind.TAIL, SelectionKind.SAMPLE,
+                                    SelectionKind.DROP)),
 ])
 def test_supported_selection_kinds(impl, supported, kind):
     assert impl.supports(SelectionOp(kind=kind), None) == (kind in supported)
@@ -110,6 +113,45 @@ def test_selection_executes_in_greedy_plan(method, kwargs):
         assert set(result["id"]) <= set(frame["id"])
         expected = frame.iloc[result["id"].to_list()]
     assert_polars_frame_equal(result, pl.from_pandas(expected))
+
+
+@pytest.mark.parametrize("method", ["dropna", "drop_duplicates"])
+def test_series_selection_executes_in_greedy_plan(method):
+    frame = pd.DataFrame({"x": [1.0, 1.0, None]})
+    data = st.as_data_op(frame)
+    dag = getattr(data["x"], method)()
+
+    with config(implementation_selector="greedy"):
+        ops, *_ = optimize(dag)
+        result = st._api.evaluate(dag)
+
+    assert isinstance(result, pl.Series)
+    expected_impl = (PolarsSeriesDropnaSelectionOp if method == "dropna"
+                     else PolarsSeriesDropDuplicatesSelectionOp)
+    assert isinstance(ops[-1], expected_impl)
+    expected = getattr(frame["x"], method)().reset_index(drop=True)
+    pd.testing.assert_series_equal(result.to_pandas().reset_index(drop=True), expected,
+                                   check_dtype=False)
+
+
+@pytest.mark.parametrize("keep", ["first", "last", False])
+def test_series_drop_duplicates_keep_in_greedy_plan(keep):
+    frame = pd.DataFrame({"x": [1, 2, 1, None, None]})
+    data = st.as_data_op(frame)
+    dag = data["x"].drop_duplicates(keep=keep)
+
+    with config(implementation_selector="greedy"):
+        result = st._api.evaluate(dag)
+
+    expected = frame["x"].drop_duplicates(keep=keep).reset_index(drop=True)
+    pd.testing.assert_series_equal(result.to_pandas().reset_index(drop=True), expected,
+                                   check_dtype=False)
+
+
+def test_polars_series_dropna_removes_nan_and_null():
+    series = pl.Series("x", [1.0, np.nan, None])
+    op = PolarsSeriesDropnaSelectionOp(kind=SelectionKind.DROPNA)
+    assert op.process("fit_transform", [series]).to_list() == [1.0]
 
 
 class TestPandasMethodBasedSelectionOp(unittest.TestCase):
@@ -195,7 +237,7 @@ class TestPolarsSampleSelectionOp(unittest.TestCase):
 
         translated = get_polars_sample_kwargs(op, [frame, 0.5, True, 7, True])
 
-        self.assertEqual({"n": 2, "with_replacement": True, "seed": 7}, translated)
+        self.assertEqual({"n": 2, "with_replacement": True, "seed": 7, "shuffle": True}, translated)
 
     def test_positional_frac_replace_and_seed_use_pandas_order(self):
         frame = pl.DataFrame({"x": range(5)})
@@ -204,7 +246,7 @@ class TestPolarsSampleSelectionOp(unittest.TestCase):
 
         translated = get_polars_sample_kwargs(op, [frame, 0.5, True, 7])
 
-        self.assertEqual({"n": 2, "with_replacement": True, "seed": 7}, translated)
+        self.assertEqual({"n": 2, "with_replacement": True, "seed": 7, "shuffle": True}, translated)
 
     def test_process_defaults_to_one_row(self):
         frame = pl.DataFrame({"x": range(5)})
@@ -566,3 +608,12 @@ class TestPolarsDropnaSelectionOp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_polars_sample_shuffles_like_pandas():
+    # pandas.sample returns a permutation; polars only does with shuffle=True.
+    frame = pl.DataFrame({"x": range(20)})
+    op = PolarsSampleSelectionOp(kind=SelectionKind.SAMPLE, kwargs={"frac": 1.0, "random_state": 0})
+    result = op.process("fit", [frame])["x"].to_list()
+    assert sorted(result) == list(range(20))
+    assert result != list(range(20))
