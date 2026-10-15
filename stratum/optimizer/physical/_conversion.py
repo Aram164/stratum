@@ -88,14 +88,15 @@ def _is_default_index(data) -> bool:
 def _index_origin(op: IRNode, memo: dict):
     # Lazy imports: avoid import cycles.
     from stratum.optimizer.logical._aggregation_ops import AggregateOp
-    from stratum.optimizer.logical._join_ops import FILTERING_JOINS, JoinOp
+    from stratum.optimizer.logical._join_ops import FilteringJoinOp, JoinOp
     from stratum.optimizer.logical._map_ops import MapOp
     from stratum.optimizer.logical._numeric_ops import NumericOp
     from stratum.optimizer.logical._ops import (BaseEstimatorOp, BinOp, ImplOp,
                                                 MethodCallOp, SplitXOp, UnaryOp,
                                                 ValueOp)
+    from stratum.optimizer.logical._metadata_ops import RenameOp, ResetIndexOp
     from stratum.optimizer.logical._projection_ops import (
-        ColumnProjectionOp, ColumnSelectorOp, DropOp, MetadataOp)
+        ColumnProjectionOp, ColumnSelectorOp, DropOp)
     from stratum.optimizer.logical._selection_ops import SelectionOp, SliceSelectionOp
     from stratum.optimizer.logical._sort_ops import SortOp
     from stratum.optimizer.physical._source_execs import FileReadOp, InMemoryFrame
@@ -113,10 +114,10 @@ def _index_origin(op: IRNode, memo: dict):
         return DEFAULT if _is_default_index(op.data) else new
     if isinstance(op, ValueOp):
         return DEFAULT if _is_default_index(op.value) else new
-    if isinstance(op, MetadataOp):
-        if op.func == "reset_index":
-            return DEFAULT if dict(op.kwargs or {}).get("drop") is True else new
-        return first_input()  # rename
+    if isinstance(op, ResetIndexOp):
+        return DEFAULT
+    if isinstance(op, RenameOp):
+        return first_input()
     if isinstance(op, SelectionOp):
         # Keeps row labels; only head() of a default index stays default.
         if (isinstance(op, SliceSelectionOp) and not op.from_end
@@ -127,9 +128,11 @@ def _index_origin(op: IRNode, memo: dict):
         return new
     if isinstance(op, SortOp):
         return DEFAULT if op.ignore_index else new
+    if isinstance(op, FilteringJoinOp):
+        return new  # keeps the left rows' labels
     if isinstance(op, JoinOp):
-        # merge -> RangeIndex; index and semi/anti joins keep labels.
-        if op.left_index or op.right_index or op.how in FILTERING_JOINS:
+        # merge -> RangeIndex; index joins keep labels.
+        if op.left_index or op.right_index:
             return new
         return DEFAULT
     if isinstance(op, AggregateOp):

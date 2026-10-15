@@ -232,7 +232,7 @@ def test_q1_runs_under_greedy_behind_a_conversion():
     polars could not restore, so the filter runs on pandas too and the plan
     converts the source instead (#227)."""
     df = make_lineitem()
-    with st.config(implementation_selector="greedy"):
+    with st.config(implementation_selector="greedy", explain=["logical", "physical_impl"]):
         ops = _plan(build_q1(df))
         result = st._api.evaluate(build_q1(df))
     conversions = [op for op in ops if isinstance(op, ConversionOp)]
