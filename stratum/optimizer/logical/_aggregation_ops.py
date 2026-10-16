@@ -1,3 +1,5 @@
+import pandas as pd
+
 from stratum.optimizer.logical._column_expr import (
     AggExpr, AllCols, Col, OperandLeaf, _Folder)
 from stratum.optimizer.logical._ops import (
@@ -244,7 +246,9 @@ def _named_aggregation_entries(op: MethodCallOp) -> tuple | None:
     """Recognise pandas ``agg(name=(column, reduction), ...)`` syntax.
 
     A positional dict whose values are tuples has different pandas semantics,
-    so this path is deliberately limited to keyword named aggregation.
+    so this path is deliberately limited to keyword named aggregation. Each value
+    is a ``(column, reduction)`` pair or a ``pd.NamedAgg``, which pandas 3 made a
+    dataclass rather than a tuple.
     """
     if op.method_name not in _AGG_FUNCS or op.args or "func" in (op.kwargs or {}):
         return None
@@ -255,14 +259,29 @@ def _named_aggregation_entries(op: MethodCallOp) -> tuple | None:
     entries = []
     try:
         for name, value in named.items():
-            if (not isinstance(name, str) or not isinstance(value, tuple)
-                    or len(value) != 2 or not all(isinstance(v, str) for v in value)):
+            spec = _named_aggregation_spec(value)
+            if not isinstance(name, str) or spec is None:
                 return None
-            column, reduction = value
-            entries.append((name, AggExpr(reduction, Col(column))))
+            column, reduction, params = spec
+            entries.append((name, AggExpr(reduction, Col(column), params)))
     except NotImplementedError:
         return None
     return tuple(entries)
+
+
+def _named_aggregation_spec(value) -> tuple | None:
+    """``(column, reduction, params)`` for one named-aggregation value, if representable."""
+    if isinstance(value, pd.NamedAgg) and not isinstance(value, tuple):
+        # Positional reduction arguments have no place in an AggExpr.
+        if value.args:
+            return None
+        value, params = (value.column, value.aggfunc), dict(value.kwargs)
+    else:
+        params = {}
+    if (not isinstance(value, tuple) or len(value) != 2
+            or not all(isinstance(v, str) for v in value)):
+        return None
+    return value[0], value[1], params
 
 
 def _extract_grouping(groupby_op: MethodCallOp) -> str | list[str] | OperandRef:

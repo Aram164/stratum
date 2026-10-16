@@ -8,7 +8,8 @@ from stratum.optimizer._optimize import OptConfig, optimize as optimize_
 from stratum.optimizer.logical._aggregation_ops import (
     AggregateOp, _aggregation_entries, _aggregation_params,
     _extract_aggregations, _extract_grouping, _is_aggregation, _is_groupby_op,
-    _is_value_counts, make_aggregate_op, make_value_counts_ops)
+    _is_value_counts, _named_aggregation_entries, make_aggregate_op,
+    make_value_counts_ops)
 from stratum.optimizer.logical._column_expr import (
     AggExpr, AllCols, BinOpExpr, Col, DtExpr, OperandLeaf)
 from stratum.optimizer.logical._metadata_ops import MetadataOp
@@ -298,6 +299,21 @@ class TestAggregateHelpers(unittest.TestCase):
         _, multi_output = _groupby_agg_pair(
             agg_method="agg", agg_kwargs={"total": ["sum", "mean"]})
         self.assertFalse(_is_aggregation(multi_output))
+
+    def test_named_aggregation_accepts_named_agg(self):
+        # pandas 3 made NamedAgg a dataclass, no longer a (column, aggfunc) tuple.
+        _, named = _groupby_agg_pair(agg_method="agg", agg_kwargs={
+            "total": pd.NamedAgg(column="v", aggfunc="sum"),
+            "spread": pd.NamedAgg("v", "std", ddof=0)})
+        self.assertTrue(_is_aggregation(named))
+        self.assertEqual((("total", AggExpr("sum", Col("v"))),
+                          ("spread", AggExpr("std", Col("v"), {"ddof": 0}))),
+                         _named_aggregation_entries(named))
+
+    def test_named_agg_with_positional_reduction_arguments_is_not_fused(self):
+        _, named = _groupby_agg_pair(agg_method="agg", agg_kwargs={
+            "q": pd.NamedAgg("v", "quantile", 0.5)})
+        self.assertIsNone(_named_aggregation_entries(named))
 
     def test_is_aggregation_agg_without_spec_is_false(self):
         _, agg = _groupby_agg_pair(agg_method="agg", agg_args=())
