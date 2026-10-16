@@ -77,6 +77,10 @@ class AggregateOp(Op):
             src = self.inputs[0].output_type if self.inputs else OutputType.UNKNOWN
         if self.grouped and self.options.get("as_index") is False:
             return OutputType.FRAME
+        if self.grouped and self.counts_group_rows():
+            # One count per group, whatever columns the source has: pandas'
+            # grouped `size()` is a series keyed by the groups.
+            return OutputType.SERIES
         if src is OutputType.UNKNOWN:
             return OutputType.FRAME
         if not self.grouped:
@@ -88,6 +92,17 @@ class AggregateOp(Op):
         if src is OutputType.SERIES and len(self.aggregations) > 1:
             return OutputType.FRAME
         return src
+
+    def counts_group_rows(self) -> bool:
+        """A single unnamed ``size`` over every column: the rows per group.
+
+        Unlike other wildcard reductions it does not produce one value per
+        column, so a grouped one is a series even over a frame.
+        """
+        if len(self.aggregations) != 1:
+            return False
+        name, agg = self.aggregations[0]
+        return name is None and agg.func == "size" and isinstance(agg.child, AllCols)
 
     def entry_name(self, index: int):
         """Backend-independent name for a scalar aggregation output."""
@@ -402,6 +417,12 @@ def make_aggregate_op(op: MethodCallOp) -> AggregateOp | None:
     columns = _selected_columns(selection)
     if selection is not None and columns is None:
         return None
+    if (_extract_aggregations(op) == "size" and selection is not None
+            and not isinstance(selection.key, str)):
+        # A frame-shaped selection does not change a row count: pandas'
+        # `groupby(k)[["v"]].size()` is `groupby(k).size()`. A single-column
+        # selection is kept, since it names the resulting series.
+        columns = None
     named_entries = _named_aggregation_entries(op)
     if named_entries is not None and selection is not None:
         return None
