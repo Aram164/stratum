@@ -688,6 +688,21 @@ class GetItemOp(Op):
             name = str(key)
         super().__init__(name=name)
 
+    def update_name(self):
+        # A graph-fed key has no literal label; keep the construction-time name.
+        stack = [self.key]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, OperandRef):
+                return
+            if isinstance(value, (tuple, list)):
+                stack.extend(value)
+            elif isinstance(value, dict):
+                stack.extend(value.values())
+            elif isinstance(value, slice):
+                stack.extend((value.start, value.stop, value.step))
+        self.name = _getitem_key_name(self.key)
+
     def propagate_output_schema(self):
         """A literal key projects a sub-schema; a row slice or a boolean row mask
         keeps the input schema."""
