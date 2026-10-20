@@ -121,10 +121,10 @@ _UNCHECKED = object()
     pytest.param(lambda: MethodCallOp("endswith", args=(R1,), kwargs={}), ["BRASS", "SS"], [0], True,
                  id="method-keeps-receiver"),
     pytest.param(lambda: call(np.add, R0, R1), [2.0, 3.0], [0], 5.0, id="numpy-keeps-primary"),
-    pytest.param(lambda: BinOp(operator.sub, R0, R1), [np.array([10, 20]), 3], [0], np.array([7, 17]),
-                 id="binop-right"),
-    pytest.param(lambda: BinOp(operator.sub, R0, R1), [3, np.array([10, 20])], [1], np.array([-7, -17]),
-                 id="binop-left"),
+    # Numeric extraction and selection folding already read a ValueOp operand as a constant.
+    pytest.param(lambda: BinOp(operator.sub, R0, R1), [np.array([10, 20]), 3], [0, 1], np.array([7, 17]),
+                 id="binop-unsupported"),
+    pytest.param(lambda: UnaryOp(operator.neg, R0), [3], [0], -3, id="unary-unsupported"),
     pytest.param(lambda: PredictorOp(estimator=Ridge(), param_refs={"alpha": R1}),
                  [pd.DataFrame({"x": [1, 2]}), 0.5], [0, 1], _UNCHECKED, id="unsupported-consumer"),
 ])
@@ -174,30 +174,6 @@ def test_marked_x_y_values_are_not_inlined(flag):
 
     assert_kept(root, [source], kept=[0])
     assert root.args == (R0,)
-
-
-def test_constant_only_binop_and_unary_keep_inputs():
-    root, sources = inline(lambda: BinOp(operator.add, R0, R1), [2, 3])
-    assert_kept(root, sources, kept=[0, 1])
-    assert (root.left, root.right) == (R0, R1)
-
-    root, sources = inline(lambda: UnaryOp(operator.neg, R0), [3])
-    assert_kept(root, sources, kept=[0])
-    assert root.operand == R0
-    assert execute(root) == -3
-
-
-def test_shared_scalar_is_not_inlined_into_binops():
-    shared = ValueOp(5)
-    left = wire(BinOp(operator.add, R0, R1), ValueOp(np.array([1, 2])), shared)
-    right = wire(BinOp(operator.mul, R0, R1), ValueOp(np.array([3, 4])), shared)
-    root = wire(call(lambda a, b: (a, b), R0, R1), left, right)
-
-    literal_inlining(root)
-
-    assert shared.outputs == [left, right]
-    assert left.inputs[1] is shared and right.inputs[1] is shared
-    validate_dag(root)
 
 
 def test_getitem_name_reflects_inlined_key():
