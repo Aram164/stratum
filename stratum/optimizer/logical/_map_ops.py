@@ -31,6 +31,7 @@ from stratum.optimizer.logical._ops import (CallOp, GetAttrOp, MethodCallOp, Op,
                                             OperandRef, OutputType, _resolve_args,
                                             _resolve_kwargs)
 from stratum.optimizer.logical._index_ops import IndexAccessOp
+from stratum.optimizer.logical._metadata_ops import make_structure_read_op
 from stratum.optimizer.logical import _schema
 
 # ``_column_expr`` imports the map ops below to lift them into expressions, so
@@ -458,6 +459,9 @@ def make_frame_get_attr(new_op: AccessorMapOp, op: GetAttrOp) -> Op:
         index_op = IndexAccessOp(inputs=op.inputs, outputs=op.outputs)
         op.replace_output_of_inputs(index_op)
         return index_op
+    structure_op = make_structure_read_op(op)
+    if structure_op is not None:
+        return structure_op
     if isinstance(input_, AccessorMapOp):
         # Fuse chained GetAttr operations
         concat_attr_name = input_.attr_name.copy()
