@@ -389,6 +389,16 @@ def polars_dt_attribute(obj, attr: str):
     return result
 
 
+def polars_dt_attribute_unsupported(attr: str) -> str | None:
+    """Why pandas' ``.dt.<attr>`` has no polars translation, or None."""
+    if attr == "is_month_end":
+        return None
+    name = AccessorMapOp.POLARS_ATTR_NAME_MAP.get(attr, attr)
+    if not hasattr(pl.col("_").dt, name):
+        return f"polars has no .dt.{name}"
+    return None
+
+
 class AssignMapOp(MapOp):
     """``df.assign(...)`` with each assigned column folded to a ``ColumnExpr``.
 
