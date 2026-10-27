@@ -28,7 +28,8 @@ from stratum.optimizer.logical._source_ops import (
 from stratum.optimizer.physical._source_execs import (
     NumpyLoad, PandasInMemoryFrame, PandasReadCSV,
     PandasReadParquet, PolarsInMemoryFrame, PolarsReadCSV, PolarsReadParquet,
-    _polars_cloud_path, _translate_storage_options)
+    _POLARS_CSV_TRANSLATORS, _POLARS_PARQUET_TRANSLATORS, _polars_cloud_path,
+    _translate_storage_options)
 from stratum.runtime._buffer_pool import BufferPool
 from tests._helpers import csv_file, npy_file, parquet_file
 
@@ -386,6 +387,86 @@ class TestPolarsReadOptionTranslation(unittest.TestCase):
         self.assertEqual({"engine": "pyarrow"}, ops[-1].pandas_options)
         self.assertFalse(PolarsReadParquet.supports(ops[-1], PlanContext.from_flags()))
         self.assertIn("engine", ops[-1]._unsupported_reason)
+
+
+class TestPolarsReadOptionValues(unittest.TestCase):
+    """pandas takes read option values that polars cannot, or reads differently.
+    Polars refuses those at plan time, so pandas reads the file; every other value
+    reads on polars exactly as on pandas."""
+
+    def setUp(self):
+        self.df = pd.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"], "z": [1.0, 2.5, 3.0]})
+
+    def assert_matches_pandas(self, path, **options):
+        op = PolarsReadCSV(file_path=path, **options)
+        self.assertTrue(PolarsReadCSV.supports(op, PlanContext.from_flags()),
+                        getattr(op, "_unsupported_reason", None))
+        pd.testing.assert_frame_equal(pd.read_csv(path, **options),
+                                      op.process("fit_transform", []).to_pandas(),
+                                      check_dtype=False)
+
+    def assert_refused(self, op, reason):
+        impl = PolarsReadParquet if isinstance(op, ReadParquetOp) else PolarsReadCSV
+        self.assertFalse(impl.supports(op, PlanContext.from_flags()))
+        self.assertIn(reason, op._unsupported_reason)
+
+    def test_every_option_has_a_translator(self):
+        self.assertEqual(set(ReadCSVOp.OPTIONS), set(_POLARS_CSV_TRANSLATORS))
+        self.assertEqual(set(ReadParquetOp.OPTIONS), set(_POLARS_PARQUET_TRANSLATORS))
+
+    def test_usecols_keep_the_file_order(self):
+        # polars returns a projection in the order given, pandas in the file's.
+        with csv_file(self.df) as path:
+            for usecols in (["z", "x"], [2, 0], {"z", "x"}, ["z", "x", "z"]):
+                with self.subTest(usecols=usecols):
+                    self.assert_matches_pandas(path, usecols=usecols)
+
+    def test_translatable_values_match_pandas(self):
+        with csv_file(self.df) as path:
+            for options in ({"skiprows": 1}, {"nrows": 2}, {"names": ["p", "q", "r"]},
+                            {"na_values": "b"}, {"na_values": ["b", "c"]},
+                            {"na_values": {"y": "c"}}, {"na_values": {"y": ["c"]}},
+                            {"quotechar": "'"}):
+                with self.subTest(options):
+                    self.assert_matches_pandas(path, **options)
+        with csv_file(self.df, sep=";") as path:
+            self.assert_matches_pandas(path, sep=";")
+
+    def test_values_polars_cannot_read_are_refused_at_plan_time(self):
+        for options, reason in (({"skiprows": [1]}, "skiprows"),
+                                ({"skiprows": lambda i: i == 1}, "skiprows"),
+                                ({"usecols": lambda name: name != "y"}, "usecols"),
+                                ({"usecols": ["x", 0]}, "usecols"),
+                                ({"na_values": {"y": ["b", "c"]}}, "na_values"),
+                                ({"na_values": "1"}, "as a number"),
+                                ({"na_values": 3}, "na_values"),
+                                ({"sep": r"\s+"}, "sep"),
+                                ({"quotechar": "''"}, "quotechar"),
+                                ({"comment": "#"}, "comment"),
+                                ({"names": ["p", 1, "r"]}, "names"),
+                                ({"usecols": ["p"], "names": ["p", "q", "r"]}, "usecols with names")):
+            with self.subTest(options):
+                self.assert_refused(ReadCSVOp(file_path="x.csv", **options), reason)
+        self.assert_refused(ReadParquetOp(file_path="x.parquet", columns=[0]), "columns")
+
+    def test_names_must_fit_the_file_width(self):
+        # pandas makes an index of the leading columns for fewer names, and pads
+        # for more; polars reads only an exact fit.
+        with csv_file(self.df) as path:
+            for names in (["p", "q"], ["p", "q", "r", "s"]):
+                with self.subTest(names=names):
+                    self.assert_refused(ReadCSVOp(file_path=path, names=names), "columns")
+        # A graph-fed path is only known when the read runs.
+        self.assertTrue(PolarsReadCSV.supports(
+            ReadCSVOp(file_path=OperandRef(0), names=["p", "q"]), PlanContext.from_flags()))
+
+    def test_greedy_reads_a_refused_value_on_pandas(self):
+        with csv_file(self.df) as path:
+            data = st.as_data_op(path).skb.apply_func(pd.read_csv, skiprows=[1])[["x"]]
+            ops, *_ = optimize(data, OptConfig(selector=get_implementation_selector("greedy")))
+            self.assertIsInstance(ops[0], PandasReadCSV)
+            self.assertEqual(pd.read_csv(path, skiprows=[1])["x"].tolist(),
+                             run_plan(ops)["x"].to_list())
 
 
 class TestPolarsParquetFilters(unittest.TestCase):
