@@ -15,7 +15,7 @@ from stratum.optimizer._op_utils import topological_iterator, validate_dag
 from stratum.optimizer.logical._aggregation_ops import AggregateOp
 from stratum.optimizer.logical._column_expr import BinOpExpr, Col, Const
 from stratum.optimizer.logical._dataframe_ops import ConcatOp, MaskSelectionOp
-from stratum.optimizer.logical._literal_inlining import literal_inlining
+from stratum.optimizer.logical.rewrites._literal_inlining import literal_inlining
 from stratum.optimizer.logical._numeric_ops import NumericOp, NumericOpType
 from stratum.optimizer.logical._projection_ops import ColumnProjectionOp
 from stratum.runtime._buffer_pool import BufferPool

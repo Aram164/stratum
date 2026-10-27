@@ -164,7 +164,7 @@ def remap_operand_refs(value, mapping: dict):
 
     Recurses tuples/lists/dicts/slices and column-expression trees (anything exposing a
     ``remap_operand_refs`` method, e.g. a ``ColumnExpr`` predicate). This is the
-    single walker shared by CSE edge de-duplication (``_op_cse``) and
+    single walker shared by CSE edge de-duplication (``rewrites._cse``) and
     :meth:`IRNode._dedupe_input_refs`, so both renumber refs identically --
     including refs buried inside a ``ColumnExpr`` field.
     """
@@ -391,7 +391,7 @@ class IRNode:
 
         Such ops (ChoiceOp outcomes, ImplOp's cached ``operand_index``) must never
         have two input slots collapsed into one by edge de-duplication -- their
-        slots are kept distinct instead. Shared with ``_op_cse._can_merge`` so the
+        slots are kept distinct instead. Shared with ``rewrites._cse._can_merge`` so the
         two dedup paths treat the same op types as un-collapsible.
         """
         return False
