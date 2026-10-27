@@ -65,6 +65,36 @@ class OutputType(Enum):
     MATRIX = auto()
 
 
+class IndexEffect(Enum):
+    """How an op's output row labels relate to its inputs' (on pandas).
+
+    Index lineage (``physical/_conversion.py``) follows these to tell when two
+    frames share row labels, so that pairing their rows by position (polars)
+    gives what aligning them by label (pandas) does.
+    """
+    #: Labels of its own; nothing is assumed about them.
+    NEW = auto()
+    #: Its first input's rows, in order, with their labels.
+    KEEP = auto()
+    #: Elementwise over its inputs: their labels, if they all share them.
+    COMMON = auto()
+    #: A fresh ``0..n-1`` RangeIndex.
+    DEFAULT = auto()
+    #: The first rows of its first input: a prefix of ``0..n-1`` stays one.
+    PREFIX = auto()
+
+
+def has_default_labels(data) -> bool:
+    """Whether ``data``'s rows carry a fresh ``0..n-1`` RangeIndex (a polars frame
+    has no labels, which reads the same)."""
+    import pandas as pd
+    import polars as pl
+    if isinstance(data, (pl.DataFrame, pl.Series)):
+        return True
+    index = getattr(data, "index", None)
+    return isinstance(index, pd.RangeIndex) and index.start == 0 and index.step == 1
+
+
 # Output types that belong to the dataframe (pandas/polars) world. A frame and a
 # series are both manipulated by the dataframe extraction path; a MATRIX (numpy)
 # is not. Used to decide whether an op consumes already-produced frame data (a
@@ -234,6 +264,15 @@ class IRNode:
     #: Auto-generated skrub-compat wrappers leave this None and keep their class
     #: name.
     logical_family: str | None = None
+
+    #: How the output's row labels relate to the inputs'; see :class:`IndexEffect`.
+    #: A class whose effect depends on its fields defines a property instead.
+    index_effect = IndexEffect.NEW
+
+    #: How this op pairs the rows of several frame inputs on pandas: ``True`` by
+    #: label, ``False`` by position or not at all, ``None`` by label wherever the
+    #: labels differ (pandas' alignment of elementwise operands).
+    aligns_by_label = None
 
     #: Physical impls multiply-inherit from their logical family op (e.g.
     #: ``PandasQuerySelectionOp(SelectionOp, PhysicalOp)``), so they would inherit

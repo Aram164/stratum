@@ -15,7 +15,7 @@ from stratum.optimizer.physical._join_execs import (
     PandasIsInSemiJoinOp, PandasJoinOp, PandasMergeSemiJoinOp,
     PolarsFilteringJoinOp)
 from stratum.optimizer.physical._plan_context import PlanContext
-from stratum.optimizer.physical._source_execs import InMemoryFrame
+from stratum.optimizer.logical._source_ops import InMemoryFrameOp
 from .test_dataframe_ops import (
     force_polars, optimize, run_op)
 
@@ -271,7 +271,7 @@ class TestDrivingPipeline(unittest.TestCase):
         # relation, and reads it once.
         ops = optimize(self._build(st.as_data_op(self.df)),
                        OptConfig(dataframe_ops=True))
-        sources = [o for o in ops if isinstance(o, InMemoryFrame)]
+        sources = [o for o in ops if isinstance(o, InMemoryFrameOp)]
         self.assertEqual(1, len(sources))
         self.assertEqual(2, len(sources[0].outputs),
                          "the scan should feed both the count and the join")

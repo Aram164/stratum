@@ -23,11 +23,6 @@ from ._input_removal_planning import compute_pinned_ops, plan_input_removals
 from .physical._plan_context import PlanContext
 from .physical._lowering import lower_to_physical
 from .physical._impl_selection import (ImplementationSelector, get_implementation_selector, select_implementations)
-# Importing the physical exec modules and their lowering rules.
-from .physical import _source_execs  # noqa: F401
-from .physical import _transform_execs  # noqa: F401
-from .physical import _predictor_execs  # noqa: F401
-from .physical import _generic_execs  # noqa: F401
 from stratum.frontend._skrub_graph import build_graph
 import logging
 from stratum._config import FLAGS

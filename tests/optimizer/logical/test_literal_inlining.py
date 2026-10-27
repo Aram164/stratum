@@ -138,9 +138,9 @@ def test_consumer_rules(make, values, kept, expected):
 
 @pytest.mark.parametrize("axis, inlined", [(1, True), ("columns", True), (True, False), (1.0, False), (None, False)])
 def test_concat_inlines_only_int_or_str_axis(axis, inlined):
-    # `first` is a literal too, but only the axis position is eligible.
+    # The first operand is a literal too, but only the axis position is eligible.
     frame = pd.DataFrame({"a": [1, 2]})
-    root, sources = inline(lambda: ConcatOp(first=R0, others=[R1], axis=R2), [None, frame, axis])
+    root, sources = inline(lambda: ConcatOp(operands=[R0, R1], axis=R2), [None, frame, axis])
 
     assert_kept(root, sources, kept=[0, 1] if inlined else [0, 1, 2])
     if inlined:

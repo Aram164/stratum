@@ -1,12 +1,10 @@
-"""Physical source operators: the concrete read / in-memory-frame impls.
+"""Physical source operators: one impl per backend for each logical source op.
 
-Lowering turns a logical :class:`~stratum.optimizer.logical._source_ops.DataSourceOp`
-into an *abstract* source op (``ReadCSV``, ``ReadParquet``, ``InMemoryFrame``, or
-the already-concrete ``NumpyLoad``). Implementation selection then swaps each
-abstract op to one of the backend-specific concrete classes registered below via
-``@physical_impl`` (``PandasReadCSV`` / ``PolarsReadCSV`` / ...). The concrete
-``process`` methods contain no backend or ``rechunk`` branch -- both decisions
-were fixed at plan time.
+Implementation selection swaps a logical source op (``ReadCSVOp``,
+``ReadParquetOp``, ``LoadNumpyOp``, ``InMemoryFrameOp``) to one of the concrete
+classes registered below via ``@physical_impl`` (``PandasReadCSV`` /
+``PolarsReadCSV`` / ...). The concrete ``process`` methods contain no backend or
+``rechunk`` branch -- both decisions were fixed at plan time.
 """
 from __future__ import annotations
 
@@ -16,11 +14,12 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from stratum.optimizer.logical._base import (OperandRef, OutputType, _resolve_args,
-                                        _resolve_kwargs)
-from stratum.optimizer.logical._source_ops import DataSourceOp
+from stratum.optimizer.logical._base import _resolve_kwargs, _resolve_operand
+from stratum.optimizer.logical._source_ops import (
+    FileReadOp, InMemoryFrameOp, LoadNumpyOp, ReadCSVOp, ReadParquetOp, pandas_read_kwargs)
+from stratum.optimizer._op_utils import _iter_operand_refs
+from stratum.optimizer.physical._conversion import to_pandas
 from stratum.optimizer.physical._physical_ops import PhysicalOp
-from stratum.optimizer.physical._lowering import lowering_rule
 from stratum.optimizer.physical._registry import physical_impl
 
 
@@ -32,32 +31,23 @@ def rechunk_pl_frame(df, rows_per_chunk=128_000):
     return pl.concat(parts, rechunk=False)
 
 
-# --- pandas -> polars read options --------------------------------------------
-# ``read_args`` / ``read_kwargs`` always arrive in *pandas* spelling: the
-# ``_READ_FORMATS`` table in ``logical/_source_ops.py`` recognises only
-# ``pd.read_csv`` / ``pd.read_parquet`` / ``np.load``, so a source op can only
-# ever have been built from a pandas call. The polars readers rename most of
-# those options, take different values for some, and have no counterpart at all
-# for others -- forwarding them verbatim is what made ``PolarsReadCSV`` reject a
-# plain ``usecols``.
+# --- read options -> polars --------------------------------------------------
+# A read op's fields are pandas' options: extraction only recognises
+# ``pd.read_csv`` / ``pd.read_parquet`` / ``np.load``. The polars readers name
+# most of those options differently, take different values for some, and have
+# no counterpart at all for the ``pandas_options``.
 #
-# Only exact-meaning renames are listed below. An option whose polars
+# Only exact-meaning translations are listed below. An option whose polars
 # counterpart takes different *values* (``dtype`` vs ``schema_overrides``, whose
 # type objects are not interchangeable) or has no counterpart at all
-# (``index_col``) is rejected, not approximated: a read option silently dropped
-# or mis-mapped yields a quietly wrong frame, which is a far worse failure than
-# a plan that refuses to compile.
-#
-# Rejecting is also why this is not a ``supports()`` check. Declining the op
-# would let selection fall back to ``PandasReadCSV`` inside an otherwise-polars
-# plan, feeding a pandas frame into polars operators -- a later, stranger crash
-# than the one raised here.
+# (``index_col``) is refused in ``supports()``, not approximated: a read option
+# silently dropped or mis-mapped yields a quietly wrong frame. The pandas impl
+# reads the source instead, and a polars plan converts its frame (#227).
 
-#: pandas CSV option -> polars CSV option, same meaning, same value.
-_POLARS_CSV_RENAMES = {
-    "sep": "separator",
-    "delimiter": "separator",
+#: pandas read_csv option -> polars read_csv option, same meaning, same value.
+_POLARS_CSV_NAMES = {
     "usecols": "columns",
+    "sep": "separator",
     "names": "new_columns",
     "nrows": "n_rows",
     "skiprows": "skip_rows",
@@ -67,9 +57,8 @@ _POLARS_CSV_RENAMES = {
     "low_memory": "low_memory",
 }
 
-#: pandas parquet option -> polars parquet option. polars takes no positional
-#: options at all, hence the ``read_args`` guard in ``_translate_read_options``.
-_POLARS_PARQUET_RENAMES = {
+#: pandas read_parquet option -> polars read_parquet option.
+_POLARS_PARQUET_NAMES = {
     "columns": "columns",
 }
 
@@ -207,149 +196,102 @@ def _translate_filters(value):
     return "filters", predicate
 
 
-#: pandas option -> callable(value) -> (polars option, polars value), for the
-#: options that need the value rewritten and not just the name.
+#: pandas option -> callable(value) -> (polars option, polars value), for those
+#: that need the value rewritten and not just the name.
 _POLARS_CSV_VALUE_TRANSLATORS = {
     "header": _translate_header,
     "encoding": _translate_encoding,
     "storage_options": _translate_storage_options,
 }
 
+_POLARS_PARQUET_VALUE_TRANSLATORS = {
+    "filters": _translate_filters,
+    "storage_options": _translate_storage_options,
+}
 
-def _check_read_options(read_args, read_kwargs, renames, translators, reader):
-    """Reject read options that have no polars counterpart, by name.
 
-    Which options a source carries is known when the plan is built, so an
-    untranslatable one should fail the plan rather than the run -- the same
-    reason the backend itself is bound at plan time. Values can still be
-    ``OperandRef``s at that point, so the value *translators* run later, in
-    ``process``.
+def _polars_refusal(op: FileReadOp, translators: dict) -> str | None:
+    """Why polars cannot read ``op`` exactly, or ``None``.
+
+    Which options a source carries is known when the plan is built, and so is
+    every value that is not graph-fed. A graph-fed value is translated in
+    ``process``, which raises if it has no polars spelling.
     """
-    if read_args:
-        raise ValueError(
-            f"{reader} cannot take positional read options {list(read_args)!r}: "
-            f"the polars readers accept only the path positionally, so a "
-            f"pandas positional argument would bind to a different option.")
-    unsupported = sorted(name for name in (read_kwargs or {})
-                         if name not in renames and name not in translators)
-    if unsupported:
-        raise ValueError(
-            f"{reader} has no polars equivalent for read option(s) "
-            f"{unsupported}. Read this source with the pandas backend, or drop "
-            f"the option.")
+    if op.pandas_options:
+        return f"no polars equivalent for read option(s) {sorted(op.pandas_options)}"
+    for name, value in op.given_options().items():
+        if name in translators and next(_iter_operand_refs(value), None) is None:
+            try:
+                translators[name](value)
+            except ValueError as exc:
+                return str(exc)
+    return None
 
 
-def _translate_read_options(read_args, read_kwargs, renames, translators, reader):
-    """Rewrite pandas-spelled read options into their polars spelling.
+def _supports_on_polars(op: FileReadOp, translators: dict) -> bool:
+    reason = _polars_refusal(op, translators)
+    if reason is not None:
+        op._unsupported_reason = reason
+        return False
+    return True
 
-    Re-runs :func:`_check_read_options` so a graph-fed source op reaching this
-    with an option the plan-time check never saw still fails loudly.
-    """
-    _check_read_options(read_args, read_kwargs, renames, translators, reader)
+
+def _polars_read_kwargs(op: FileReadOp, inputs: list, names: dict, translators: dict) -> dict:
+    """``op``'s given options, resolved against ``inputs``, in polars' spelling."""
     translated = {}
-    for name, value in (read_kwargs or {}).items():
+    for name, value in _resolve_kwargs(op.given_options(), inputs).items():
         if name in translators:
             new_name, new_value = translators[name](value)
             translated[new_name] = new_value
         else:
-            translated[renames[name]] = value
+            translated[names[name]] = value
     return translated
 
 
-class FileReadOp(PhysicalOp):
-    """Abstract read-from-file source. Concrete subclasses pick the backend reader."""
-    is_abstract = True
-    format: str | None = None
+# --- ReadCSVOp ------------------------------------------------------------------
 
-    def __init__(self, file_path=None, read_args=None, read_kwargs=None):
-        # No name beyond the path: the concrete class (PandasReadCSV, ...) already
-        # encodes backend and format, so a "read_csv" name would just double it in
-        # the plan. A graph-fed path is only known at runtime, so it is not a name.
-        super().__init__(name=str(file_path) if file_path is not None
-                              and not isinstance(file_path, OperandRef) else None)
-        # file_path is an OperandRef when graph-fed (e.g. a variable), else a literal.
-        self.file_path = file_path
-        self.read_args = read_args
-        self.read_kwargs = read_kwargs
-        self.output_type = OutputType.FRAME
-
-    def _resolve(self, inputs):
-        """Resolve the (possibly graph-fed) path and read args/kwargs from inputs."""
-        file_path = inputs[self.file_path.k] if isinstance(self.file_path, OperandRef) else self.file_path
-        read_args = _resolve_args(self.read_args, inputs) if self.read_args else []
-        read_kwargs = _resolve_kwargs(self.read_kwargs, inputs) if self.read_kwargs else {}
-        return file_path, read_args, read_kwargs
+@physical_impl(of=ReadCSVOp, backend="pandas", input_format="value", output_format="frame")
+class PandasReadCSV(ReadCSVOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        return pd.read_csv(_resolve_operand(self.file_path, inputs),
+                           **_resolve_kwargs(pandas_read_kwargs(self), inputs))
 
 
-class ReadCSV(FileReadOp):
-    is_abstract = True
-    format = "csv"
-
-
-@physical_impl(of=ReadCSV, backend="pandas", input_format="value", output_format="frame")
-class PandasReadCSV(ReadCSV):
-    is_abstract = False
+@physical_impl(of=ReadCSVOp, backend="polars", input_format="value", output_format="frame")
+class PolarsReadCSV(ReadCSVOp, PhysicalOp):
+    @classmethod
+    def supports(cls, op: ReadCSVOp, ctx) -> bool:
+        return _supports_on_polars(op, _POLARS_CSV_VALUE_TRANSLATORS)
 
     def process(self, mode: str, inputs: list):
-        file_path, read_args, read_kwargs = self._resolve(inputs)
-        return pd.read_csv(file_path, *read_args, **read_kwargs)
-
-
-@physical_impl(of=ReadCSV, backend="polars", input_format="value", output_format="frame")
-class PolarsReadCSV(ReadCSV):
-    is_abstract = False
-
-    _RENAMES = _POLARS_CSV_RENAMES
-    _VALUE_TRANSLATORS = _POLARS_CSV_VALUE_TRANSLATORS
-
-    def on_impl_selected(self, ctx) -> None:
-        _check_read_options(self.read_args, self.read_kwargs, self._RENAMES,
-                            self._VALUE_TRANSLATORS, type(self).__name__)
-
-    def process(self, mode: str, inputs: list):
-        file_path, read_args, read_kwargs = self._resolve(inputs)
-        translated = _translate_read_options(
-            read_args, read_kwargs, self._RENAMES, self._VALUE_TRANSLATORS,
-            type(self).__name__)
+        translated = _polars_read_kwargs(self, inputs, _POLARS_CSV_NAMES,
+                                         _POLARS_CSV_VALUE_TRANSLATORS)
         # pandas infers header=None when names are supplied. Polars otherwise
         # consumes the first data row as a header, even with new_columns set.
-        if "names" in read_kwargs and read_kwargs.get("header") is None:
+        if self.names is not None and self.header == "infer":
             translated["has_header"] = False
-        return pl.read_csv(file_path, **translated)
+        return pl.read_csv(_resolve_operand(self.file_path, inputs), **translated)
 
 
-class ReadParquet(FileReadOp):
-    is_abstract = True
-    format = "parquet"
+# --- ReadParquetOp --------------------------------------------------------------
+
+@physical_impl(of=ReadParquetOp, backend="pandas", input_format="value", output_format="frame")
+class PandasReadParquet(ReadParquetOp, PhysicalOp):
+    def process(self, mode: str, inputs: list):
+        return pd.read_parquet(_resolve_operand(self.file_path, inputs),
+                               **_resolve_kwargs(pandas_read_kwargs(self), inputs))
 
 
-@physical_impl(of=ReadParquet, backend="pandas", input_format="value", output_format="frame")
-class PandasReadParquet(ReadParquet):
-    is_abstract = False
+@physical_impl(of=ReadParquetOp, backend="polars", input_format="value", output_format="frame")
+class PolarsReadParquet(ReadParquetOp, PhysicalOp):
+    @classmethod
+    def supports(cls, op: ReadParquetOp, ctx) -> bool:
+        return _supports_on_polars(op, _POLARS_PARQUET_VALUE_TRANSLATORS)
 
     def process(self, mode: str, inputs: list):
-        file_path, read_args, read_kwargs = self._resolve(inputs)
-        return pd.read_parquet(file_path, *read_args, **read_kwargs)
-
-
-@physical_impl(of=ReadParquet, backend="polars", input_format="value", output_format="frame")
-class PolarsReadParquet(ReadParquet):
-    is_abstract = False
-
-    _RENAMES = _POLARS_PARQUET_RENAMES
-    _VALUE_TRANSLATORS = {"filters": _translate_filters,
-                          "storage_options": _translate_storage_options}
-
-    def on_impl_selected(self, ctx) -> None:
-        _check_read_options(self.read_args, self.read_kwargs, self._RENAMES,
-                            self._VALUE_TRANSLATORS, type(self).__name__)
-
-    def process(self, mode: str, inputs: list):
-        file_path, read_args, read_kwargs = self._resolve(inputs)
-        read_kwargs = _translate_read_options(
-            read_args, read_kwargs, self._RENAMES, self._VALUE_TRANSLATORS,
-            type(self).__name__)
-        file_path = _polars_cloud_path(file_path)
+        read_kwargs = _polars_read_kwargs(self, inputs, _POLARS_PARQUET_NAMES,
+                                          _POLARS_PARQUET_VALUE_TRANSLATORS)
+        file_path = _polars_cloud_path(_resolve_operand(self.file_path, inputs))
         predicate = read_kwargs.pop("filters", None)
         if predicate is None:
             return pl.read_parquet(file_path, **read_kwargs)
@@ -362,50 +304,28 @@ class PolarsReadParquet(ReadParquet):
         return frame.collect()
 
 
-class NumpyLoad(FileReadOp):
-    """``np.load`` source. Produces an ndarray (MATRIX), so it is backend-agnostic:
-    a single concrete impl serves both frame backends."""
-    is_abstract = False
-    format = "npy"
+# --- LoadNumpyOp ----------------------------------------------------------------
 
-    def __init__(self, file_path=None, read_args=None, read_kwargs=None):
-        super().__init__(file_path, read_args, read_kwargs)
-        self.output_type = OutputType.MATRIX
+@physical_impl(of=LoadNumpyOp, backend="numpy", input_format="value", output_format="matrix")
+class NumpyLoad(LoadNumpyOp, PhysicalOp):
+    """``np.load`` yields an ndarray, so one impl serves both frame backends."""
 
     def process(self, mode: str, inputs: list):
-        file_path, read_args, read_kwargs = self._resolve(inputs)
-        return np.load(file_path, *read_args, **read_kwargs)
+        return np.load(_resolve_operand(self.file_path, inputs),
+                       **_resolve_kwargs(self.options, inputs))
 
 
-# Registered as its own implementation so the default registry includes it;
-# selection is a no-op (the class is already concrete and backend-agnostic).
-physical_impl(of=NumpyLoad, backend="numpy", input_format="value",
-              output_format="matrix")(NumpyLoad)
+# --- InMemoryFrameOp ------------------------------------------------------------
 
-
-class InMemoryFrame(PhysicalOp):
-    """Abstract source wrapping an already-materialised dataframe."""
-    is_abstract = True
-
-    def __init__(self, data=None):
-        # No name: the concrete class (PandasInMemoryFrame, ...) already says it all.
-        super().__init__()
-        self.data = data
-        self.output_type = OutputType.FRAME
-
-
-@physical_impl(of=InMemoryFrame, backend="pandas", input_format="value", output_format="frame")
-class PandasInMemoryFrame(InMemoryFrame):
-    is_abstract = False
-
+@physical_impl(of=InMemoryFrameOp, backend="pandas", input_format="value", output_format="frame")
+class PandasInMemoryFrame(InMemoryFrameOp, PhysicalOp):
     def process(self, mode: str, inputs: list):
-        return self.data
+        # The frame passed in may be a polars one; this impl produces pandas.
+        return to_pandas(self.data)
 
 
-@physical_impl(of=InMemoryFrame, backend="polars", input_format="value", output_format="frame")
-class PolarsInMemoryFrame(InMemoryFrame):
-    is_abstract = False
-
+@physical_impl(of=InMemoryFrameOp, backend="polars", input_format="value", output_format="frame")
+class PolarsInMemoryFrame(InMemoryFrameOp, PhysicalOp):
     def on_impl_selected(self, ctx) -> None:
         # Fold the rechunk decision into instance state at plan time.
         self.rechunk = ctx.rechunk
@@ -413,18 +333,3 @@ class PolarsInMemoryFrame(InMemoryFrame):
     def process(self, mode: str, inputs: list):
         out = pl.DataFrame(self.data)
         return rechunk_pl_frame(out) if getattr(self, "rechunk", True) else out
-
-
-@lowering_rule(DataSourceOp)
-def lower_data_source(op: DataSourceOp, ctx):
-    """Lower a logical ``DataSourceOp`` to the matching abstract physical source."""
-    if op.data is not None:
-        return InMemoryFrame(data=op.data)
-    fmt = op.format
-    if fmt == "csv":
-        return ReadCSV(file_path=op.file_path, read_args=op.read_args, read_kwargs=op.read_kwargs)
-    if fmt == "parquet":
-        return ReadParquet(file_path=op.file_path, read_args=op.read_args, read_kwargs=op.read_kwargs)
-    if fmt == "npy":
-        return NumpyLoad(file_path=op.file_path, read_args=op.read_args, read_kwargs=op.read_kwargs)
-    raise ValueError(f"Unsupported source format for lowering: {fmt!r}")
